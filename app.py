@@ -38,6 +38,21 @@ app = Flask(
     static_folder='.',      # carpeta donde están tus archivos (html, css, js, img)
     static_url_path=''      # para que /styles.css, /app.js, /img/... funcionen directo
 )
+
+from flask import jsonify
+
+@app.get("/")
+def home():
+    return jsonify({"ok": True, "service": "ferrocentral-backend"}), 200
+
+@app.get("/ping")
+def ping():
+    return "pong", 200
+
+@app.get("/health")
+def health():
+    return jsonify({"status": "healthy"}), 200
+
 app.secret_key = os.environ.get("SECRET_KEY", "dev_cambia_esto_ivan")
 
 CORS(app, origins=[
