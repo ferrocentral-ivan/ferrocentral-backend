@@ -45,13 +45,12 @@ from flask import jsonify
 def home():
     return jsonify({"ok": True, "service": "ferrocentral-backend"}), 200
 
-@app.get("/ping")
-def ping():
-    return "pong", 200
 
-@app.get("/health")
+
+@app.route("/health")
 def health():
-    return jsonify({"status": "healthy"}), 200
+    return {"status": "healthy"}
+
 
 app.secret_key = os.environ.get("SECRET_KEY", "dev_cambia_esto_ivan")
 
@@ -1170,9 +1169,10 @@ def api_admin_stats():
 
 
 
-@app.route('/api/ping')
-def ping():
+@app.route("/api/ping")
+def api_ping():
     return {"ok": True, "message": "Servidor Flask funcionando ✅"}
+
 
 
 @app.get("/api/productos")
