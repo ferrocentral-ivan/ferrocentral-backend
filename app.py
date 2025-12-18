@@ -41,9 +41,6 @@ app = Flask(
 
 from flask import jsonify
 
-@app.get("/")
-def home():
-    return jsonify({"ok": True, "service": "ferrocentral-backend"}), 200
 
 
 
@@ -1417,5 +1414,7 @@ def api_product_override(code):
 
 # ---------------- MAIN ----------------
 
-if __name__ == '__main__':
-    app.run(debug=True)
+if __name__ == "__main__":
+    import os
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)

@@ -3,20 +3,13 @@ __pycache__/
 *.pyc
 .DS_Store
 
-# si tienes miles de imágenes locales, no las subas al backend:
-truper_export/
-img/
-
-# base de datos local (la puedes subir solo al inicio si quieres, pero mejor no)
-trupper.db
-
-venv/
-__pycache__/
-*.pyc
 *.db
 *.sqlite*
 pedidos.json
 notas/token*
 *.xlsm
-.DS_Store
+
+# NO subir fotos ni export masivo al repo
+truper_export/
+img/
 facturas/
