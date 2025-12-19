@@ -96,11 +96,41 @@ def ensure_password_reset_columns():
     conn.close()
 
 
-
-
-
-
 from werkzeug.security import generate_password_hash, check_password_hash
+
+
+def ensure_pedidos_geo_columns():
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("PRAGMA table_info(pedidos)")
+    cols = [row["name"] for row in cur.fetchall()]
+
+    def add_col(sql):
+        try:
+            cur.execute(sql)
+        except Exception:
+            pass
+
+    if "direccion_entrega" not in cols:
+        add_col("ALTER TABLE pedidos ADD COLUMN direccion_entrega TEXT")
+
+    if "telefono" not in cols:
+        add_col("ALTER TABLE pedidos ADD COLUMN telefono TEXT")
+
+    if "lat" not in cols:
+        add_col("ALTER TABLE pedidos ADD COLUMN lat REAL")
+
+    if "lng" not in cols:
+        add_col("ALTER TABLE pedidos ADD COLUMN lng REAL")
+
+    if "maps_url" not in cols:
+        add_col("ALTER TABLE pedidos ADD COLUMN maps_url TEXT")
+
+    conn.commit()
+    conn.close()
+
+
 
 def bootstrap_super_admin():
     conn = get_connection()
@@ -188,7 +218,9 @@ def audit(action: str, entity: str, entity_id=None, payload=None):
 # ✅ Inicialización correcta (FUERA de la función)
 create_tables()
 ensure_password_reset_columns()
+ensure_pedidos_geo_columns()
 bootstrap_super_admin()
+
 
 # ---------------- RUTAS DE PÁGINAS ----------------
 
@@ -396,6 +428,19 @@ def api_pedido():
     notas      = data.get("notas", "")
     items      = data.get("items", [])
 
+    direccion_entrega = data.get("direccion_entrega", "")
+    telefono          = data.get("telefono", "")
+    lat               = data.get("lat", None)
+    lng               = data.get("lng", None)
+
+    maps_url = ""
+    try:
+        if lat is not None and lng is not None:
+            maps_url = f"https://www.google.com/maps/search/?api=1&query={lat},{lng}"
+    except Exception:
+        maps_url = ""
+
+
     if not empresa_id or total is None or items is None or len(items) == 0:
         return jsonify({"ok": False, "error": "Datos de pedido incompletos"}), 400
 
@@ -413,9 +458,11 @@ def api_pedido():
 
     # Guardar el pedido
     cur.execute("""
-    INSERT INTO pedidos (empresa_id, admin_id, fecha, total, estado, notas)
-    VALUES (?, ?, ?, ?, 'pendiente', ?)
-""", (empresa_id, admin_id, fecha, total, notas))
+    INSERT INTO pedidos (empresa_id, admin_id, fecha, total, estado, notas, direccion_entrega, telefono, lat, lng, maps_url)
+VALUES (?, ?, ?, ?, 'pendiente', ?, ?, ?, ?, ?, ?)
+
+""", (empresa_id, admin_id, fecha, total, notas, direccion_entrega, telefono, lat, lng, maps_url))
+
 
 
     pedido_id = cur.lastrowid  # ID del nuevo pedido
@@ -452,11 +499,18 @@ def api_pedido():
             "estado": "pendiente",
             "total": float(total),
             "items": items,
+            "direccion_entrega": direccion_entrega,
+            "telefono": telefono,
+            "lat": lat,
+            "lng": lng,
+            "maps_url": maps_url,
+
         })
     except Exception as e:
         print("WARN: no se pudo guardar pedidos.json:", e)
 
-    return jsonify({"ok": True, "pedido_id": pedido_id})
+    return jsonify({"ok": True, "pedido_id": pedido_id, "maps_url": maps_url})
+
 
 
 @app.route('/api/pedidos')
@@ -528,6 +582,11 @@ def api_pedido_detalle(pedido_id):
                p.total,
                p.estado,
                p.notas,
+                p.direccion_entrega,
+                p.telefono,
+                p.lat,
+                p.lng,
+                p.maps_url,
                e.razon_social,
                e.nit,
                e.contacto,
