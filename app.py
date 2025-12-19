@@ -1330,7 +1330,7 @@ def auth_login():
         audit("LOGIN", "admin", row["id"], {"role": row["role"]})
 
 
-        return jsonify({"ok": True, "role": row["role"], "redirect": "/admin"})
+        return jsonify({"ok": True, "role": row["role"], "redirect": "/admin.html"})
 
     # ---- LOGIN EMPRESA ----
     password_hash = hashlib.sha256(password.encode()).hexdigest()
@@ -1353,7 +1353,7 @@ def auth_login():
     audit("LOGIN", "empresa", row["id"])
 
 
-    return jsonify({"ok": True, "role": "EMPRESA", "redirect": "/tienda"})
+    return jsonify({"ok": True, "role": "EMPRESA", "redirect": "/inicio.html"})
 
 # -------------------------
 # Compatibilidad (legacy)
