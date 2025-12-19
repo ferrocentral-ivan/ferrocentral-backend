@@ -51,12 +51,20 @@ def health():
 
 app.secret_key = os.environ.get("SECRET_KEY", "dev_cambia_esto_ivan")
 
+# --- Cookies de sesión para frontend en otro dominio (Hostinger) ---
+app.config["SESSION_COOKIE_SAMESITE"] = "None"
+app.config["SESSION_COOKIE_SECURE"] = True
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+
+
 CORS(app, origins=[
   "http://127.0.0.1:5000",
   "http://localhost:5000",
   "https://ferrocentral.com.bo",
   "https://www.ferrocentral.com.bo",
+  "https://srv1722-files.hstgr.io",  # <-- para pruebas/preview Hostinger
 ], supports_credentials=True)
+
 
 
 
