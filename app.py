@@ -4,6 +4,8 @@ import os, json, hashlib, secrets
 from datetime import datetime, timedelta
 from io import BytesIO
 from backend.database import get_connection, create_tables
+from werkzeug.security import generate_password_hash, check_password_hash
+
 
 
 # =======================
@@ -62,7 +64,7 @@ CORS(app, origins=[
   "http://localhost:5000",
   "https://ferrocentral.com.bo",
   "https://www.ferrocentral.com.bo",
-  "https://srv1722-files.hstgr.io",  # <-- para pruebas/preview Hostinger
+  
 ], supports_credentials=True)
 
 
@@ -80,55 +82,9 @@ def send_reset_email(to_email, link):
 
 
 
-# Nos aseguramos de que la BD tenga las columnas para reset de contraseña
-def ensure_password_reset_columns():
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("PRAGMA table_info(empresas)")
-    cols = [row["name"] for row in cur.fetchall()]
-
-    if "reset_token" not in cols:
-        cur.execute("ALTER TABLE empresas ADD COLUMN reset_token TEXT")
-    if "reset_token_expira" not in cols:
-        cur.execute("ALTER TABLE empresas ADD COLUMN reset_token_expira TEXT")
-
-    conn.commit()
-    conn.close()
 
 
-from werkzeug.security import generate_password_hash, check_password_hash
 
-
-def ensure_pedidos_geo_columns():
-    conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute("PRAGMA table_info(pedidos)")
-    cols = [row["name"] for row in cur.fetchall()]
-
-    def add_col(sql):
-        try:
-            cur.execute(sql)
-        except Exception:
-            pass
-
-    if "direccion_entrega" not in cols:
-        add_col("ALTER TABLE pedidos ADD COLUMN direccion_entrega TEXT")
-
-    if "telefono" not in cols:
-        add_col("ALTER TABLE pedidos ADD COLUMN telefono TEXT")
-
-    if "lat" not in cols:
-        add_col("ALTER TABLE pedidos ADD COLUMN lat REAL")
-
-    if "lng" not in cols:
-        add_col("ALTER TABLE pedidos ADD COLUMN lng REAL")
-
-    if "maps_url" not in cols:
-        add_col("ALTER TABLE pedidos ADD COLUMN maps_url TEXT")
-
-    conn.commit()
-    conn.close()
 
 
 
@@ -143,8 +99,9 @@ def bootstrap_super_admin():
         password = "admin1994"  # luego lo cambiamos
         cur.execute("""
             INSERT INTO admins (username, password_hash, role, active, created_at)
-            VALUES (?, ?, 'SUPER_ADMIN', 1, ?)
-        """, (username, generate_password_hash(password), datetime.utcnow().isoformat()))
+            VALUES (%s, %s, 'SUPER_ADMIN', true, %s)
+        """, (username, generate_password_hash(password), datetime.utcnow()))
+
         conn.commit()
 
     conn.close()
@@ -181,7 +138,8 @@ def forbid_if_not_owner(cur, pedido_id: int):
         return None  # SUPER_ADMIN pasa
 
     admin_id = session.get("admin_id")
-    cur.execute("SELECT admin_id FROM pedidos WHERE id = ?", (pedido_id,))
+    cur.execute("SELECT admin_id FROM pedidos WHERE id = %s", (pedido_id,))
+
     row = cur.fetchone()
 
     if not row or row["admin_id"] != admin_id:
@@ -204,7 +162,7 @@ def audit(action: str, entity: str, entity_id=None, payload=None):
 
         cur.execute("""
             INSERT INTO audit_log (actor_role, actor_id, action, entity, entity_id, payload_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
         """, (actor_role, actor_id, action, entity, entity_id, payload_json, datetime.utcnow().isoformat()))
 
         conn.commit()
@@ -217,9 +175,8 @@ def audit(action: str, entity: str, entity_id=None, payload=None):
 
 # ✅ Inicialización correcta (FUERA de la función)
 create_tables()
-ensure_password_reset_columns()
-ensure_pedidos_geo_columns()
 bootstrap_super_admin()
+
 
 
 # ---------------- RUTAS DE PÁGINAS ----------------
@@ -245,9 +202,11 @@ def crear_admin():
     try:
         cur.execute("""
              INSERT INTO admins (username, password_hash, role, active, created_at)
-             VALUES (?, ?, ?, 1, ?)
+             VALUES (%s, %s, %s, true, %s)
+        RETURNING id
         """, (username, password_hash, role, datetime.utcnow().isoformat()))
-        new_id = cur.lastrowid
+        new_id = cur.fetchone()["id"]
+
         conn.commit()
         audit("ADMIN_CREADO", "admin", new_id, {"username": username, "role": role})
 
@@ -255,7 +214,7 @@ def crear_admin():
     except Exception as e:
         conn.close()
         msg = str(e)
-        if "UNIQUE constraint failed: admins.username" in msg:
+        if "duplicate key value" in msg:
              return jsonify({"ok": False, "error": "Ese correo ya existe como admin."}), 400
         return jsonify({"ok": False, "error": msg}), 400
 
@@ -281,11 +240,12 @@ def listar_admins():
 @require_role("SUPER_ADMIN")
 def activar_desactivar_admin(admin_id):
     data = request.json or {}
-    active = 1 if data.get("active") else 0
+    active = True if data.get("active") else False
 
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("UPDATE admins SET active = ? WHERE id = ?", (active, admin_id))
+    cur.execute("UPDATE admins SET active = %s WHERE id = %s", (active, admin_id))
+
     conn.commit()
     audit("ADMIN_ACTIVE", "admin", admin_id, {"active": active})
 
@@ -303,7 +263,7 @@ def api_audit():
         SELECT id, actor_role, actor_id, action, entity, entity_id, payload_json, created_at
         FROM audit_log
         ORDER BY id DESC
-        LIMIT ?
+        LIMIT %s
     """, (limit,))
     rows = cur.fetchall()
     conn.close()
@@ -339,7 +299,7 @@ def api_password_reset_request():
     cur.execute("""
         SELECT id, correo
         FROM empresas
-        WHERE correo = ? OR nit = ?
+        WHERE correo = %s OR nit = %s
     """, (usuario, usuario))
 
     row = cur.fetchone()
@@ -354,8 +314,8 @@ def api_password_reset_request():
 
     cur.execute("""
     UPDATE empresas
-    SET reset_token = ?, reset_token_expira = ?
-    WHERE id = ?
+    SET reset_token = %s, reset_token_expira = %s
+    WHERE id = %s
 """, (token, expira, row["id"]))
 
 
@@ -385,7 +345,7 @@ def api_password_reset():
     cur.execute("""
         SELECT id, reset_token_expira
         FROM empresas
-        WHERE reset_token = ?
+        WHERE reset_token = %s
     """, (token,))
     row = cur.fetchone()
 
@@ -407,8 +367,8 @@ def api_password_reset():
     new_hash = hashlib.sha256(new_password.encode()).hexdigest()
     cur.execute("""
         UPDATE empresas
-        SET password = ?, reset_token = NULL, reset_token_expira = NULL
-        WHERE id = ?
+        SET password = %s, reset_token = NULL, reset_token_expira = NULL
+        WHERE id = %s
     """, (new_hash, row["id"]))
 
     conn.commit()
@@ -451,7 +411,8 @@ def api_pedido():
     conn = get_connection()
     cur = conn.cursor()
 
-    cur.execute("SELECT admin_id FROM empresas WHERE id = ?", (empresa_id,))
+    cur.execute("SELECT admin_id FROM empresas WHERE id = %s", (empresa_id,))
+
     row = cur.fetchone()
     admin_id = row["admin_id"] if row else None
 
@@ -459,19 +420,19 @@ def api_pedido():
     # Guardar el pedido
     cur.execute("""
     INSERT INTO pedidos (empresa_id, admin_id, fecha, total, estado, notas, direccion_entrega, telefono, lat, lng, maps_url)
-VALUES (?, ?, ?, ?, 'pendiente', ?, ?, ?, ?, ?, ?)
-
+VALUES (%s, %s, %s, %s, 'pendiente', %s, %s, %s, %s, %s, %s)
+RETURNING id
 """, (empresa_id, admin_id, fecha, total, notas, direccion_entrega, telefono, lat, lng, maps_url))
 
 
 
-    pedido_id = cur.lastrowid  # ID del nuevo pedido
+    pedido_id = cur.fetchone()["id"]  # ID del nuevo pedido
 
     # Guardar items
     for item in items:
         cur.execute("""
             INSERT INTO pedido_items (pedido_id, producto_id, descripcion, cantidad, precio_unit)
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s)
         """, (
             pedido_id,
             item["id"],
@@ -528,7 +489,7 @@ def api_pedidos():
             FROM pedidos p
             JOIN empresas e ON e.id = p.empresa_id
             WHERE p.estado NOT IN ('facturado', 'cancelado')
-              AND p.admin_id = ?
+              AND p.admin_id = %s
             ORDER BY p.id DESC
         """, (admin_id,))
     else:
@@ -593,7 +554,7 @@ def api_pedido_detalle(pedido_id):
                COALESCE(e.descuento, 0) AS descuento
         FROM pedidos p
         JOIN empresas e ON e.id = p.empresa_id
-        WHERE p.id = ?
+        WHERE p.id = %s
     """, (pedido_id,))
     header = cur.fetchone()
 
@@ -605,7 +566,7 @@ def api_pedido_detalle(pedido_id):
     cur.execute("""
         SELECT producto_id, descripcion, cantidad, precio_unit
         FROM pedido_items
-        WHERE pedido_id = ?
+        WHERE pedido_id = %s
     """, (pedido_id,))
     items = cur.fetchall()
     conn.close()
@@ -657,12 +618,12 @@ def api_pedido_actualizar_cotizacion(pedido_id):
         # actualizar item del pedido
         cur.execute("""
             UPDATE pedido_items
-            SET cantidad = ?, precio_unit = ?
-            WHERE pedido_id = ? AND producto_id = ?
+            SET cantidad = %s, precio_unit = %s
+            WHERE pedido_id = %s AND producto_id = %s
         """, (cantidad, precio_unit, pedido_id, producto_id))
 
     # actualizar total del pedido
-    cur.execute("UPDATE pedidos SET total = ? WHERE id = ?", (total, pedido_id))
+    cur.execute("UPDATE pedidos SET total = %s WHERE id = %s", (total, pedido_id))
 
     conn.commit()
     audit("PEDIDO_COTIZADO", "pedido", pedido_id, {"total": total})
@@ -696,7 +657,7 @@ def generar_factura_pdf(pedido_id):
                COALESCE(e.descuento, 0) AS descuento
         FROM pedidos p
         JOIN empresas e ON p.empresa_id = e.id
-        WHERE p.id = ?
+        WHERE p.id = %s
     """, (pedido_id,))
     row = cur.fetchone()
 
@@ -714,7 +675,7 @@ def generar_factura_pdf(pedido_id):
     cur.execute("""
         SELECT descripcion, cantidad, precio_unit
         FROM pedido_items
-        WHERE pedido_id = ?
+        WHERE pedido_id = %s
     """, (pedido_id,))
     items_db = cur.fetchall()
     
@@ -728,7 +689,7 @@ def generar_factura_pdf(pedido_id):
         for (d, c, pu) in items_db
     ]
 
-    cur.execute("UPDATE pedidos SET estado = 'facturado' WHERE id = ?", (pedido_id,))
+    cur.execute("UPDATE pedidos SET estado = 'facturado' WHERE id = %s", (pedido_id,))
     conn.commit()
     audit("PEDIDO_FACTURADO", "pedido", pedido_id, {"total": float(p_total)})
     
@@ -761,7 +722,7 @@ def generar_factura_pdf(pedido_id):
 
         # --- LOGO DE LA EMPRESA ---
     logo_path = os.path.join(base_dir, "img", "logos", "logo_empresa.png")
-    print("RUTA LOGO:", logo_path, "EXISTE?", os.path.exists(logo_path))  # debug
+    print("RUTA LOGO:", logo_path, "EXISTE%s", os.path.exists(logo_path))  # debug
 
     if os.path.exists(logo_path):
         try:
@@ -888,7 +849,7 @@ def reporte_facturados():
         FROM pedidos p
         JOIN empresas e ON e.id = p.empresa_id
         WHERE p.estado = 'facturado'
-          AND p.admin_id = ?
+          AND p.admin_id = %s
         ORDER BY p.fecha ASC, p.id ASC
         """, (admin_id,))
     else:
@@ -977,7 +938,7 @@ def api_pedido_cambiar_estado(pedido_id):
         conn.close()
         return blocked
 
-    cur.execute("UPDATE pedidos SET estado = ? WHERE id = ?", (nuevo_estado, pedido_id))
+    cur.execute("UPDATE pedidos SET estado = %s WHERE id = %s", (nuevo_estado, pedido_id))
     if cur.rowcount == 0:
         conn.close()
         return jsonify({"ok": False, "error": "Pedido no encontrado"}), 404
@@ -1002,7 +963,7 @@ def api_empresas():
             SELECT id, nit, razon_social, contacto, telefono, correo, direccion,
                    COALESCE(descuento, 0) AS descuento
             FROM empresas
-            WHERE admin_id = ?
+            WHERE admin_id = %s
             ORDER BY razon_social ASC
         """, (admin_id,))
     else:
@@ -1034,7 +995,7 @@ def api_empresa_detalle_o_eliminar(empresa_id):
             SELECT id, nit, razon_social, contacto, telefono, correo, direccion,
                    COALESCE(descuento, 0) AS descuento
             FROM empresas
-            WHERE id = ?
+            WHERE id = %s
         """, (empresa_id,))
         row = cur.fetchone()
         conn.close()
@@ -1046,7 +1007,7 @@ def api_empresa_detalle_o_eliminar(empresa_id):
 
     # --- DELETE: eliminar empresa ---
     # Primero revisamos si tiene pedidos asociados
-    cur.execute("SELECT COUNT(*) AS cnt FROM pedidos WHERE empresa_id = ?", (empresa_id,))
+    cur.execute("SELECT COUNT(*) AS cnt FROM pedidos WHERE empresa_id = %s", (empresa_id,))
     row = cur.fetchone()
     if row and row["cnt"] > 0:
         conn.close()
@@ -1056,7 +1017,7 @@ def api_empresa_detalle_o_eliminar(empresa_id):
         }), 400
 
     # Si no tiene pedidos, la eliminamos
-    cur.execute("DELETE FROM empresas WHERE id = ?", (empresa_id,))
+    cur.execute("DELETE FROM empresas WHERE id = %s", (empresa_id,))
     if cur.rowcount == 0:
         conn.close()
         return jsonify({"ok": False, "error": "Empresa no encontrada"}), 404
@@ -1092,7 +1053,7 @@ def api_actualizar_descuento(empresa_id):
     role = session.get("role")
     admin_id = session.get("admin_id")
 
-    cur.execute("SELECT admin_id FROM empresas WHERE id = ?", (empresa_id,))
+    cur.execute("SELECT admin_id FROM empresas WHERE id = %s", (empresa_id,))
     row = cur.fetchone()
 
     if not row:
@@ -1106,7 +1067,7 @@ def api_actualizar_descuento(empresa_id):
         return jsonify({"ok": False, "error": "No autorizado"}), 403
 
 
-    cur.execute("UPDATE empresas SET descuento = ? WHERE id = ?", (descuento, empresa_id))
+    cur.execute("UPDATE empresas SET descuento = %s WHERE id = %s", (descuento, empresa_id))
     if cur.rowcount == 0:
         conn.close()
         return jsonify({"ok": False, "error": "Empresa no encontrada"}), 404
@@ -1172,19 +1133,20 @@ def api_admin_stats():
 
     if role == "ADMIN":
         # SOLO datos del admin
-        cur.execute("SELECT COUNT(*) FROM empresas WHERE admin_id = ?", (admin_id,))
+        cur.execute("SELECT COUNT(*) FROM empresas WHERE admin_id = %s", (admin_id,))
         total_empresas = cur.fetchone()[0] or 0
 
         cur.execute("""
             SELECT COUNT(*) FROM pedidos
-            WHERE admin_id = ?
-              AND DATE(fecha) = DATE('now','localtime')
+            WHERE admin_id = %s
+              AND to_timestamp(fecha, 'YYYY-MM-DD HH24:MI:SS')::date = CURRENT_DATE
+
         """, (admin_id,))
         pedidos_hoy = cur.fetchone()[0] or 0
 
         cur.execute("""
             SELECT COUNT(*) FROM pedidos
-            WHERE admin_id = ?
+            WHERE admin_id = %s
               AND estado = 'pendiente'
         """, (admin_id,))
         pendientes = cur.fetchone()[0] or 0
@@ -1192,8 +1154,9 @@ def api_admin_stats():
         cur.execute("""
             SELECT COALESCE(SUM(total), 0)
             FROM pedidos
-            WHERE admin_id = ?
-              AND DATE(fecha) = DATE('now','localtime')
+            WHERE admin_id = %s
+              AND to_timestamp(fecha, 'YYYY-MM-DD HH24:MI:SS')::date = CURRENT_DATE
+
         """, (admin_id,))
         total_hoy = cur.fetchone()[0] or 0.0
 
@@ -1204,7 +1167,8 @@ def api_admin_stats():
 
         cur.execute("""
             SELECT COUNT(*) FROM pedidos
-            WHERE DATE(fecha) = DATE('now','localtime')
+            WHERE to_timestamp(fecha, 'YYYY-MM-DD HH24:MI:SS')::date = CURRENT_DATE
+
         """)
         pedidos_hoy = cur.fetchone()[0] or 0
 
@@ -1214,7 +1178,8 @@ def api_admin_stats():
         cur.execute("""
             SELECT COALESCE(SUM(total), 0)
             FROM pedidos
-            WHERE DATE(fecha) = DATE('now','localtime')
+            WHERE to_timestamp(fecha, 'YYYY-MM-DD HH24:MI:SS')::date = CURRENT_DATE
+
         """)
         total_hoy = cur.fetchone()[0] or 0.0
 
@@ -1288,10 +1253,14 @@ def api_registro_empresa():
         cur = conn.cursor()
         cur.execute("""
             INSERT INTO empresas (nit, razon_social, contacto, telefono, correo, direccion, password, admin_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
         """, (nit, razon_social, contacto, telefono, correo, direccion, password_hash, admin_id))
+
+        empresa_id = cur.fetchone()["id"]
         conn.commit()
-        audit("EMPRESA_CREADA", "empresa", cur.lastrowid, {"nit": nit, "razon_social": razon_social})
+        audit("EMPRESA_CREADA", "empresa", empresa_id, {"nit": nit, "razon_social": razon_social})
+
         conn.close()
         return jsonify({"ok": True, "message": "Empresa registrada con éxito"})
     except Exception as e:
@@ -1313,7 +1282,8 @@ def auth_login():
     if tipo == "admin":
         conn = get_connection()
         cur = conn.cursor()
-        cur.execute("SELECT * FROM admins WHERE username = ? AND active = 1", (usuario,))
+        cur.execute("SELECT * FROM admins WHERE username = %s AND active = true", (usuario,))
+
         row = cur.fetchone()
         
 
@@ -1337,7 +1307,7 @@ def auth_login():
 
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM empresas WHERE correo = ? OR nit = ?", (usuario, usuario))
+    cur.execute("SELECT * FROM empresas WHERE correo = %s OR nit = %s", (usuario, usuario))
     row = cur.fetchone()
     conn.close()
 
@@ -1450,7 +1420,7 @@ def api_product_override(code):
 
     if request.method == "GET":
         cur.execute(
-            "SELECT code, oculto, imagen FROM producto_overrides WHERE code = ?",
+            "SELECT code, oculto, imagen FROM producto_overrides WHERE code = %s",
             (code,)
         )
         row = cur.fetchone()
@@ -1461,13 +1431,13 @@ def api_product_override(code):
 
     # POST: crear / actualizar override
     data = request.get_json() or {}
-    oculto = 1 if data.get("oculto") else 0
+    oculto = True if data.get("oculto") else False
     imagen = (data.get("imagen") or "").strip() or None
 
     cur.execute(
         """
         INSERT INTO producto_overrides (code, oculto, imagen)
-        VALUES (?, ?, ?)
+        VALUES (%s, %s, %s)
         ON CONFLICT(code) DO UPDATE SET
             oculto = excluded.oculto,
             imagen = excluded.imagen
