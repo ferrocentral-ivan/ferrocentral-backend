@@ -53,8 +53,8 @@ def health():
 
 
 
-# --- SESIÓN / COOKIES (PROD)
-app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY")  # Render env var
+# ===== SESIÓN / COOKIES (PROD) =====
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev_cambia_esto_ivan")
 
 app.config["SESSION_COOKIE_DOMAIN"] = ".ferrocentral.com.bo"
 app.config["SESSION_COOKIE_SAMESITE"] = "None"
