@@ -41,18 +41,6 @@ app = Flask(
     static_url_path=''      # para que /styles.css, /app.js, /img/... funcionen directo
 )
 
-# =========================
-# SESIÓN / COOKIES (PROD)
-# =========================
-app.config["SECRET_KEY"] = os.environ.get(
-    "SECRET_KEY",
-    "ferrocentral_clave_super_segura_fija_2025"
-)
-
-app.config["SESSION_COOKIE_DOMAIN"] = ".ferrocentral.com.bo"
-app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-app.config["SESSION_COOKIE_SECURE"] = True
-
 
 from flask import jsonify
 
@@ -64,9 +52,11 @@ def health():
     return {"status": "healthy"}
 
 
-app.secret_key = os.environ.get("SECRET_KEY", "dev_cambia_esto_ivan")
 
-# --- Cookies de sesión para frontend en otro dominio (Hostinger) ---
+# --- SESIÓN / COOKIES (PROD)
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY")  # Render env var
+
+app.config["SESSION_COOKIE_DOMAIN"] = ".ferrocentral.com.bo"
 app.config["SESSION_COOKIE_SAMESITE"] = "None"
 app.config["SESSION_COOKIE_SECURE"] = True
 app.config["SESSION_COOKIE_HTTPONLY"] = True
