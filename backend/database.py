@@ -58,9 +58,13 @@ def create_tables():
     CREATE TABLE IF NOT EXISTS pedidos (
         id SERIAL PRIMARY KEY,
         empresa_id INTEGER NOT NULL,
+        admin_id INTEGER,
         fecha TEXT NOT NULL,
-        total_bs DOUBLE PRECISION NOT NULL,
+        total DOUBLE PRECISION NOT NULL,
         estado TEXT NOT NULL DEFAULT 'pendiente',
+        notas TEXT,
+        direccion_entrega TEXT,
+        telefono TEXT,
         lat DOUBLE PRECISION,
         lng DOUBLE PRECISION,
         maps_url TEXT,
@@ -80,6 +84,16 @@ def create_tables():
         precio_unit DOUBLE PRECISION NOT NULL
     );
     """)
+
+    # ===== PRODUCT OVERRIDES (tu app.py lo usa) =====
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS producto_overrides (
+        code TEXT PRIMARY KEY,
+        oculto BOOLEAN NOT NULL DEFAULT FALSE,
+        imagen TEXT
+    );
+    """)
+
 
     # ===== AUDIT LOG =====
     cur.execute("""
