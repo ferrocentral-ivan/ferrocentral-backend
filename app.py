@@ -41,6 +41,19 @@ app = Flask(
     static_url_path=''      # para que /styles.css, /app.js, /img/... funcionen directo
 )
 
+# =========================
+# SESIÓN / COOKIES (PROD)
+# =========================
+app.config["SECRET_KEY"] = os.environ.get(
+    "SECRET_KEY",
+    "ferrocentral_clave_super_segura_fija_2025"
+)
+
+app.config["SESSION_COOKIE_DOMAIN"] = ".ferrocentral.com.bo"
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = True
+
+
 from flask import jsonify
 
 
