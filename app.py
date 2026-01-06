@@ -1344,7 +1344,18 @@ def auth_login():
     audit("LOGIN", "empresa", row["id"])
 
 
-    return jsonify({"ok": True, "role": "EMPRESA", "redirect": "/inicio.html"})
+    return jsonify({
+    "ok": True,
+    "role": "EMPRESA",
+    "redirect": "/inicio.html",
+    "empresa": {
+        "id": row["id"],
+        "correo": row["correo"],
+        "nit": row["nit"],
+        "razon_social": row.get("razon_social") or row.get("nombre") or ""
+    }
+})
+
 
 # -------------------------
 # Compatibilidad (legacy)
@@ -1380,13 +1391,34 @@ def auth_me():
     if not role:
         return jsonify({"ok": False}), 401
 
-    return jsonify({
+    resp = {
         "ok": True,
         "role": role,
         "admin_id": session.get("admin_id"),
         "empresa_id": session.get("empresa_id"),
         "user": session.get("user"),
-    })
+    }
+
+    # Si es empresa, devolvemos datos básicos
+    if role == "EMPRESA" and session.get("empresa_id"):
+        try:
+            conn = get_connection()
+            cur = conn.cursor()
+            cur.execute("SELECT id, correo, nit, razon_social FROM empresas WHERE id = %s", (session["empresa_id"],))
+            emp = cur.fetchone()
+            conn.close()
+            if emp:
+                resp["empresa"] = {
+                    "id": emp["id"],
+                    "correo": emp["correo"],
+                    "nit": emp["nit"],
+                    "razon_social": emp.get("razon_social") or ""
+                }
+        except Exception:
+            pass
+
+    return jsonify(resp)
+
 
 
 
