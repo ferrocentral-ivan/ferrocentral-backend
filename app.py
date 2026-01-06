@@ -35,11 +35,15 @@ def append_pedido_json(pedido_obj: dict):
 
 BASE_URL = "https://ferrocentral.com.bo"  # en local puedes usar "http://127.0.0.1:5000"
 
-app = Flask(
-    __name__,
-    static_folder='.',      # carpeta donde están tus archivos (html, css, js, img)
-    static_url_path=''      # para que /styles.css, /app.js, /img/... funcionen directo
-)
+app = Flask(__name__, static_folder='.', static_url_path='')
+
+# ==== COOKIES / SESSION (PROD) ====
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY")  # Render ENV
+app.config["SESSION_COOKIE_DOMAIN"] = ".ferrocentral.com.bo"
+app.config["SESSION_COOKIE_SAMESITE"] = "None"
+app.config["SESSION_COOKIE_SECURE"] = True
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+
 
 
 from flask import jsonify
@@ -51,15 +55,6 @@ from flask import jsonify
 def health():
     return {"status": "healthy"}
 
-
-
-# ===== SESIÓN / COOKIES (PROD) =====
-app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev_cambia_esto_ivan")
-
-app.config["SESSION_COOKIE_DOMAIN"] = ".ferrocentral.com.bo"
-app.config["SESSION_COOKIE_SAMESITE"] = "None"
-app.config["SESSION_COOKIE_SECURE"] = True
-app.config["SESSION_COOKIE_HTTPONLY"] = True
 
 
 CORS(app, origins=[
@@ -88,6 +83,22 @@ def send_reset_email(to_email, link):
 
 
 
+def _row_first_value(row, default=0):
+    if not row:
+        return default
+    # tuple/list
+    if isinstance(row, (tuple, list)):
+        return row[0] if len(row) > 0 else default
+    # dict-like
+    if isinstance(row, dict):
+        # intenta keys comunes
+        for k in ("count", "total", "total_empresas", "total_pedidos"):
+            if k in row and row[k] is not None:
+                return row[k]
+        # si no, agarra el primer value
+        vals = list(row.values())
+        return vals[0] if vals else default
+    return default
 
 
 
@@ -1126,77 +1137,46 @@ def api_producto_por_codigo(code):
 
 @app.route("/api/admin_stats")
 @require_role("SUPER_ADMIN", "ADMIN")
+@app.get("/api/admin_stats")
+@require_role("admin")
 def api_admin_stats():
-
     conn = get_connection()
     cur = conn.cursor()
 
-    role = session.get("role")
-    admin_id = session.get("admin_id")
+    def one_value():
+        row = cur.fetchone()
+        if not row:
+            return 0
+        if isinstance(row, dict):
+            return next(iter(row.values()))
+        return row[0]
 
-    if role == "ADMIN":
-        # SOLO datos del admin
-        cur.execute("SELECT COUNT(*) FROM empresas WHERE admin_id = %s", (admin_id,))
-        total_empresas = cur.fetchone()[0] or 0
+    # Total empresas
+    cur.execute("SELECT COUNT(*) AS total FROM empresas")
+    total_empresas = one_value()
 
-        cur.execute("""
-            SELECT COUNT(*) FROM pedidos
-            WHERE admin_id = %s
-              AND to_timestamp(fecha, 'YYYY-MM-DD HH24:MI:SS')::date = CURRENT_DATE
+    # Total pedidos
+    cur.execute("SELECT COUNT(*) AS total FROM pedidos")
+    total_pedidos = one_value()
 
-        """, (admin_id,))
-        pedidos_hoy = cur.fetchone()[0] or 0
+    # Total ventas (si tienes columna total_bs o total)
+    # Ajusta aquí según tu tabla real:
+    try:
+        cur.execute("SELECT COALESCE(SUM(total_bs), 0) AS total FROM pedidos")
+        total_ventas = one_value()
+    except Exception:
+        total_ventas = 0
 
-        cur.execute("""
-            SELECT COUNT(*) FROM pedidos
-            WHERE admin_id = %s
-              AND estado = 'pendiente'
-        """, (admin_id,))
-        pendientes = cur.fetchone()[0] or 0
-
-        cur.execute("""
-            SELECT COALESCE(SUM(total), 0)
-            FROM pedidos
-            WHERE admin_id = %s
-              AND to_timestamp(fecha, 'YYYY-MM-DD HH24:MI:SS')::date = CURRENT_DATE
-
-        """, (admin_id,))
-        total_hoy = cur.fetchone()[0] or 0.0
-
-    else:
-        # SUPER ADMIN → global
-        cur.execute("SELECT COUNT(*) FROM empresas")
-        total_empresas = cur.fetchone()[0] or 0
-
-        cur.execute("""
-            SELECT COUNT(*) FROM pedidos
-            WHERE to_timestamp(fecha, 'YYYY-MM-DD HH24:MI:SS')::date = CURRENT_DATE
-
-        """)
-        pedidos_hoy = cur.fetchone()[0] or 0
-
-        cur.execute("SELECT COUNT(*) FROM pedidos WHERE estado = 'pendiente'")
-        pendientes = cur.fetchone()[0] or 0
-
-        cur.execute("""
-            SELECT COALESCE(SUM(total), 0)
-            FROM pedidos
-            WHERE to_timestamp(fecha, 'YYYY-MM-DD HH24:MI:SS')::date = CURRENT_DATE
-
-        """)
-        total_hoy = cur.fetchone()[0] or 0.0
-
+    cur.close()
     conn.close()
 
     return jsonify({
         "ok": True,
-        "stats": {
-            "empresas": int(total_empresas),
-            "pedidos_hoy": int(pedidos_hoy),
-            "pendientes": int(pendientes),
-            "total_hoy": float(total_hoy),
-        }
+        "total_empresas": int(total_empresas or 0),
+        "total_pedidos": int(total_pedidos or 0),
+        "total_ventas": float(total_ventas or 0),
     })
+
 
 
 
