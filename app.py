@@ -43,6 +43,8 @@ app.config["SESSION_COOKIE_DOMAIN"] = ".ferrocentral.com.bo"
 app.config["SESSION_COOKIE_SAMESITE"] = "None"
 app.config["SESSION_COOKIE_SECURE"] = True
 app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
+
 
 
 
@@ -1135,47 +1137,60 @@ def api_producto_por_codigo(code):
     return jsonify({"ok": False, "error": "Producto no encontrado"}), 404
 
 
-@app.route("/api/admin_stats")
-@require_role("SUPER_ADMIN", "ADMIN")
 @app.get("/api/admin_stats")
-@require_role("admin")
+@require_role("SUPER_ADMIN", "ADMIN")
 def api_admin_stats():
     conn = get_connection()
     cur = conn.cursor()
 
-    def one_value():
+    def one_value(default=0):
         row = cur.fetchone()
         if not row:
-            return 0
+            return default
         if isinstance(row, dict):
             return next(iter(row.values()))
         return row[0]
 
     # Total empresas
-    cur.execute("SELECT COUNT(*) AS total FROM empresas")
-    total_empresas = one_value()
+    cur.execute("SELECT COUNT(*) AS empresas FROM empresas")
+    empresas = one_value(0)
 
-    # Total pedidos
-    cur.execute("SELECT COUNT(*) AS total FROM pedidos")
-    total_pedidos = one_value()
+    # Pedidos hoy
+    cur.execute("""
+        SELECT COUNT(*) AS pedidos_hoy
+        FROM pedidos
+        WHERE DATE(fecha) = CURRENT_DATE
+    """)
+    pedidos_hoy = one_value(0)
 
-    # Total ventas (si tienes columna total_bs o total)
-    # Ajusta aquí según tu tabla real:
-    try:
-        cur.execute("SELECT COALESCE(SUM(total_bs), 0) AS total FROM pedidos")
-        total_ventas = one_value()
-    except Exception:
-        total_ventas = 0
+    # Pendientes
+    cur.execute("""
+        SELECT COUNT(*) AS pendientes
+        FROM pedidos
+        WHERE estado = 'pendiente'
+    """)
+    pendientes = one_value(0)
 
-    cur.close()
+    # Total vendido hoy
+    cur.execute("""
+        SELECT COALESCE(SUM(total), 0) AS total_hoy
+        FROM pedidos
+        WHERE DATE(fecha) = CURRENT_DATE
+    """)
+    total_hoy = one_value(0)
+
     conn.close()
 
     return jsonify({
         "ok": True,
-        "total_empresas": int(total_empresas or 0),
-        "total_pedidos": int(total_pedidos or 0),
-        "total_ventas": float(total_ventas or 0),
+        "stats": {
+            "empresas": int(empresas or 0),
+            "pedidos_hoy": int(pedidos_hoy or 0),
+            "pendientes": int(pendientes or 0),
+            "total_hoy": float(total_hoy or 0),
+        }
     })
+
 
 
 
@@ -1279,6 +1294,7 @@ def auth_login():
         session["role"] = row["role"]          # SUPER_ADMIN o ADMIN
         session["admin_id"] = row["id"]
         session["user"] = row["username"] 
+        session.permanent = True
 
         audit("LOGIN", "admin", row["id"], {"role": row["role"]})
 
@@ -1303,6 +1319,7 @@ def auth_login():
     session["role"] = "EMPRESA"
     session["empresa_id"] = row["id"]
     session["user"] = row["correo"]
+    session.permanent = True
     audit("LOGIN", "empresa", row["id"])
 
 
