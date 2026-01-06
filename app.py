@@ -39,11 +39,18 @@ app = Flask(__name__, static_folder='.', static_url_path='')
 
 # ==== COOKIES / SESSION (PROD) ====
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY")  # Render ENV
+
+# ✅ Cookie compartida por subdominios (ferrocentral.com.bo y api.ferrocentral.com.bo)
 app.config["SESSION_COOKIE_DOMAIN"] = ".ferrocentral.com.bo"
-app.config["SESSION_COOKIE_SAMESITE"] = "None"
+
+# ✅ IMPORTANTE: como tu front y tu api comparten el mismo dominio base,
+# NO necesitas SameSite=None. Lax es más estable en Chrome/Edge.
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+
 app.config["SESSION_COOKIE_SECURE"] = True
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
+
 
 
 
@@ -1201,6 +1208,17 @@ def api_ping():
     return {"ok": True, "message": "Servidor Flask funcionando ✅"}
 
 
+@app.get("/api/debug/session")
+def debug_session():
+    return jsonify({
+        "ok": True,
+        "role": session.get("role"),
+        "admin_id": session.get("admin_id"),
+        "empresa_id": session.get("empresa_id"),
+        "cookie_header": request.headers.get("Cookie"),
+    })
+
+
 
 @app.get("/api/productos")
 def api_productos():
@@ -1243,8 +1261,11 @@ def api_registro_empresa():
     if not all([nit, razon_social, contacto, telefono, correo, direccion, password]):
         return jsonify({"ok": False, "error": "Faltan datos"}), 400
 
-    admin_id = session.get("admin_id")  # ✅ dueño
+    admin_id = session.get("admin_id")
+    if not admin_id:
+        return jsonify({"ok": False, "error": "Sesión de admin no válida. Vuelve a iniciar sesión."}), 401
     password_hash = hashlib.sha256(password.encode()).hexdigest()
+
 
     try:
         conn = get_connection()
