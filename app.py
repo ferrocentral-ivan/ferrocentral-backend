@@ -779,7 +779,7 @@ def generar_factura_pdf(pedido_id):
     c.setFont("Helvetica", 10)
     c.drawString(170, height - 125, "NIT: 454443545")
     c.drawString(170, height - 140, "Of: Calle David Avestegui #555 Queru Queru Central")
-    c.drawString(170, height - 155, "Tel.Fijo: 76920918 - WhatsApp: 76917196")
+    c.drawString(170, height - 155, "Tel.Fijo: 4792110 - WhatsApp: 76920918")
 
     # --- DATOS DEL CLIENTE ---
     y = height - 190
@@ -1128,20 +1128,57 @@ def serve_img(filename):
 
 @app.route("/api/productos/<code>")
 def api_producto_por_codigo(code):
-    """Devuelve un producto de productos.json según su código Truper."""
-    try:
-        with open("productos.json", "r", encoding="utf-8") as f:
-            productos = json.load(f)
-    except Exception as e:
-        print("Error leyendo productos.json:", e)
-        return jsonify({"ok": False, "error": "No se pudo leer productos.json"}), 500
+    """
+    Devuelve un producto buscando el código en el JSON disponible.
+    Soporta claves: code, codigo, sku, id (y variantes)
+    y normaliza valores tipo "17823.0" vs "17823".
+    """
+    import re
 
-    code = str(code).strip()
+    def norm(v):
+        s = str(v or "").strip()
+        # si viene como "17823.0" -> "17823"
+        if re.fullmatch(r"\d+(\.0+)?", s):
+            try:
+                return str(int(float(s)))
+            except Exception:
+                return s
+        return s
+
+    wanted = norm(code)
+
+    # 1) Preferir productos_precios.json si existe (normalmente ahí está el catálogo real con precios)
+    candidates = ["productos_precios.json", "productos.json"]
+
+    productos = None
+    last_err = None
+
+    for filename in candidates:
+        try:
+            if os.path.exists(filename):
+                with open(filename, "r", encoding="utf-8") as f:
+                    productos = json.load(f)
+                break
+        except Exception as e:
+            last_err = e
+
+    if productos is None:
+        return jsonify({"ok": False, "error": f"No se pudo leer productos_precios.json ni productos.json ({last_err})"}), 500
+
+    if not isinstance(productos, list):
+        return jsonify({"ok": False, "error": "El archivo de productos no es una lista"}), 500
+
+    # claves posibles
+    keys = ["code", "codigo", "sku", "id", "CODIGO", "Código", "Codigo"]
+
     for p in productos:
-        if str(p.get("code", "")).strip() == code:
-            return jsonify({"ok": True, "producto": p})
+        for k in keys:
+            if k in p:
+                if norm(p.get(k)) == wanted:
+                    return jsonify({"ok": True, "producto": p})
 
     return jsonify({"ok": False, "error": "Producto no encontrado"}), 404
+
 
 
 @app.get("/api/admin_stats")
