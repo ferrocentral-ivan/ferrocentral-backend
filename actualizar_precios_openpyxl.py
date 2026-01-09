@@ -2,13 +2,10 @@ from openpyxl import load_workbook
 import os
 import json
 
-EXCEL_FILE = os.environ.get("EXCEL_FILE", "").strip()
-
-if not EXCEL_FILE:
-    # si no hay env, preferimos xlsx; si no existe, caemos a xlsm
-    EXCEL_FILE = "proveedor.xlsx"
-
+EXCEL_FILE = "proveedor.xlsm"   # nombre fijo del Excel subido
+SHEET_PEDIDO = "HOJA PEDIDO"
 SHEET_PRECIOS = "NUEVA LISTA DE PRECIOS"
+
 
 JSON_IN = "productos_precios.json"
 JSON_OUT = "productos_precios.json"
@@ -22,6 +19,38 @@ def to_float(x):
     except:
         return None
 
+def detectar_descuento_proveedor(ws):
+    """
+    Intenta detectar el descuento del proveedor desde el Excel.
+    Devuelve 0.20 / 0.25 etc. o None si no se pudo detectar.
+    """
+    # Estrategia simple y robusta:
+    # Busca en las primeras filas alguna celda que sea 0.2 / 0.25 o 20% / 25%
+    for row in ws.iter_rows(min_row=1, max_row=20, max_col=10, values_only=True):
+        for v in row:
+            if v is None:
+                continue
+            # Caso porcentaje como texto: "20%" o "25 %"
+            if isinstance(v, str):
+                s = v.strip().replace(" ", "")
+                if s.endswith("%"):
+                    try:
+                        pct = float(s[:-1]) / 100.0
+                        if 0 < pct < 0.9:
+                            return pct
+                    except:
+                        pass
+            # Caso decimal: 0.2 / 0.25
+            if isinstance(v, (int, float)):
+                if 0 < float(v) < 0.9:
+                    # si es 20 o 25 en vez de 0.20 (a veces pasa)
+                    if float(v) > 1:
+                        pct = float(v) / 100.0
+                        if 0 < pct < 0.9:
+                            return pct
+                    return float(v)
+    return None
+
 
 def actualizar_precios(descuento_proveedor: float = 0.20):
     """
@@ -31,31 +60,48 @@ def actualizar_precios(descuento_proveedor: float = 0.20):
     """
     base_dir = os.path.dirname(os.path.abspath(__file__))
 
-    excel_path = os.path.join(base_dir, EXCEL_FILE)
     json_in_path = os.path.join(base_dir, JSON_IN)
     json_out_path = os.path.join(base_dir, JSON_OUT)
 
-    import shutil
-    shutil.copyfile(json_in_path, json_in_path + ".bak")
 
+    excel_path_xlsm = os.path.join(base_dir, "proveedor.xlsm")
+    excel_path_xlsx = os.path.join(base_dir, "proveedor.xlsx")
 
+    excel_path = excel_path_xlsm if os.path.exists(excel_path_xlsm) else excel_path_xlsx
     if not os.path.exists(excel_path):
-        # fallback si el admin subió proveedor.xlsm
-        alt = os.path.join(base_dir, "proveedor.xlsm")
-        if os.path.exists(alt):
-            excel_path = alt
-        else:
-            return {"ok": False, "error": "No encuentro el Excel", "path": excel_path}
+        return {"ok": False, "error": "No encuentro el Excel subido (proveedor.xlsm/proveedor.xlsx)", "path": excel_path}
+
 
     if not os.path.exists(json_in_path):
         return {"ok": False, "error": "No encuentro productos_precios.json", "path": json_in_path}
+    
+    import shutil
+    shutil.copyfile(json_in_path, json_in_path + ".bak")
 
     # 1) Leer Excel
     wb = load_workbook(excel_path, data_only=True, keep_vba=True)
     if SHEET_PRECIOS not in wb.sheetnames:
         return {"ok": False, "error": f"No existe la hoja '{SHEET_PRECIOS}'", "sheetnames": wb.sheetnames}
+    
+    
+    # 1.1) Leer descuento desde HOJA PEDIDO!G6 (prioridad)
+    if SHEET_PEDIDO in wb.sheetnames:
+        ws_pedido = wb[SHEET_PEDIDO]
+        v = ws_pedido["G6"].value
+        try:
+            if isinstance(v, str) and "%" in v:
+                v = float(v.replace("%", "").strip()) / 100.0
+            else:
+                v = float(v)
+            if 0 < v < 0.9:
+                descuento_proveedor = v
+        except:
+            pass
+
 
     ws = wb[SHEET_PRECIOS]
+
+
 
     # 2) Construir mapa: codigo -> P/U
     price_map = {}

@@ -1533,14 +1533,15 @@ def api_actualizar_precios():
 
 
     try:
-        data = request.json or {}
-        descuento = float(data.get("descuento", 0.20))
+        data = request.get_json(silent=True) or {}
+        descuento = data.get("descuento", None)
+        if descuento is None:
+            descuento = 0.20  # fallback por defecto (o lo que tú quieras)
+        else:
+            descuento = float(descuento)
+            if descuento < 0 or descuento > 0.9:
+                return jsonify({"ok": False, "error": "Descuento inválido"}), 400
 
-        if descuento < 0 or descuento > 0.9:
-            return jsonify({
-                "ok": False,
-                "error": "Descuento fuera de rango (0 a 0.9)"
-            }), 400
 
         resultado = actualizar_precios(descuento)
 
