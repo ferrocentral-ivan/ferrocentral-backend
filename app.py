@@ -5,6 +5,9 @@ from datetime import datetime, timedelta
 from io import BytesIO
 from backend.database import get_connection, create_tables
 from werkzeug.security import generate_password_hash, check_password_hash
+from actualizar_precios_openpyxl import actualizar_precios
+from werkzeug.utils import secure_filename
+
 
 
 
@@ -45,7 +48,7 @@ app.config["SESSION_COOKIE_DOMAIN"] = ".ferrocentral.com.bo"
 
 # ✅ IMPORTANTE: como tu front y tu api comparten el mismo dominio base,
 # NO necesitas SameSite=None. Lax es más estable en Chrome/Edge.
-app.config["SESSION_COOKIE_SAMESITE"] = "None"
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 app.config["SESSION_COOKIE_SECURE"] = True
 app.config["SESSION_COOKIE_HTTPONLY"] = True
@@ -1148,6 +1151,7 @@ def api_producto_por_codigo(code):
     wanted = norm(code)
 
     # 1) Preferir productos_precios.json si existe (normalmente ahí está el catálogo real con precios)
+    base_dir = os.path.dirname(os.path.abspath(__file__))
     candidates = ["productos_precios.json", "productos.json"]
 
     productos = None
@@ -1155,8 +1159,9 @@ def api_producto_por_codigo(code):
 
     for filename in candidates:
         try:
-            if os.path.exists(filename):
-                with open(filename, "r", encoding="utf-8") as f:
+            path = os.path.join(base_dir, filename)
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
                     productos = json.load(f)
                 break
         except Exception as e:
@@ -1459,6 +1464,57 @@ def auth_me():
 
 
 
+ALLOWED_EXCEL_EXT = {".xlsx", ".xlsm"}
+
+def _ext_of(filename: str) -> str:
+    return os.path.splitext(filename or "")[1].lower()
+
+@app.route("/api/admin/precios/upload-excel", methods=["POST"])
+@require_role("SUPER_ADMIN")
+def api_upload_excel_precios():
+    # 1) validar que venga archivo
+    if "file" not in request.files:
+        return jsonify({"ok": False, "error": "Falta archivo (campo 'file')"}), 400
+
+    f = request.files["file"]
+    if not f or not f.filename:
+        return jsonify({"ok": False, "error": "Archivo vacío"}), 400
+
+    orig_name = secure_filename(f.filename)
+    ext = _ext_of(orig_name)
+
+    # 2) validar extensión
+    if ext not in ALLOWED_EXCEL_EXT:
+        return jsonify({
+            "ok": False,
+            "error": f"Extensión no permitida ({ext}). Usa .xlsx o .xlsm"
+        }), 400
+
+    # 3) guardar en el mismo directorio del app.py (BASE_DIR)
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    tmp_path = os.path.join(base_dir, f"proveedor_upload_tmp{ext}")
+    final_path = os.path.join(base_dir, f"proveedor{ext}")
+
+    try:
+        # Guardado "atómico": primero tmp, luego replace
+        f.save(tmp_path)
+        os.replace(tmp_path, final_path)
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"No se pudo guardar Excel: {e}"}), 500
+
+    # 4) setear variable de entorno en runtime (para que actualizar_precios lo use)
+    # Nota: esto funciona para el proceso actual; en deploys/restarts usarás el default proveedor.xlsx
+    os.environ["EXCEL_FILE"] = os.path.basename(final_path)
+
+    audit("EXCEL_SUBIDO", "sistema", None, {"filename": os.path.basename(final_path)})
+    return jsonify({
+        "ok": True,
+        "saved_as": os.path.basename(final_path),
+        "path": final_path
+    })
+
+
+
 
 @app.route("/api/product_overrides")
 @require_role("SUPER_ADMIN", "ADMIN")
@@ -1487,9 +1543,13 @@ def api_actualizar_precios():
             }), 400
 
         resultado = actualizar_precios(descuento)
-        resultado["ok"] = True
+
+        if not resultado.get("ok", False):
+            return jsonify(resultado), 400
+
         audit("PRECIOS_ACTUALIZADOS", "sistema", None, {"descuento": descuento, **resultado})
         return jsonify(resultado)
+
 
     
 
@@ -1498,6 +1558,8 @@ def api_actualizar_precios():
             "ok": False,
             "error": str(e)
         }), 500
+
+
 
 
 
