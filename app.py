@@ -1128,6 +1128,22 @@ def serve_img(filename):
 
 # ---------------- RUTAS API ----------------
 
+from flask import send_file, make_response
+
+@app.route("/api/productos_precios.json", methods=["GET"])
+def api_productos_precios_json():
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(base_dir, "productos_precios.json")
+
+    if not os.path.exists(path):
+        return jsonify({"ok": False, "error": "No existe productos_precios.json"}), 404
+
+    resp = make_response(send_file(path, mimetype="application/json"))
+    # importante: evitar caché para que veas cambios rápido
+    resp.headers["Cache-Control"] = "no-store, max-age=0"
+    return resp
+
+
 
 @app.route("/api/productos/<code>")
 def api_producto_por_codigo(code):
@@ -1530,36 +1546,10 @@ def api_product_overrides_all():
 @app.route("/api/admin/actualizar-precios", methods=["POST"])
 @require_role("SUPER_ADMIN")
 def api_actualizar_precios():
-
-
-    try:
-        data = request.get_json(silent=True) or {}
-        descuento = data.get("descuento", None)
-        if descuento is None:
-            descuento = 0.20  # fallback por defecto (o lo que tú quieras)
-        else:
-            descuento = float(descuento)
-            if descuento < 0 or descuento > 0.9:
-                return jsonify({"ok": False, "error": "Descuento inválido"}), 400
-
-
-        resultado = actualizar_precios(descuento)
-
-        if not resultado.get("ok", False):
-            return jsonify(resultado), 400
-
-        audit("PRECIOS_ACTUALIZADOS", "sistema", None, {"descuento": descuento, **resultado})
-        return jsonify(resultado)
-
-
-    
-
-    except Exception as e:
-        return jsonify({
-            "ok": False,
-            "error": str(e)
-        }), 500
-
+    # Ya NO pedimos descuento por JSON.
+    # El script lo lee del Excel (HOJA PEDIDO!G6)
+    r = actualizar_precios()   # <- sin descuento
+    return jsonify(r), (200 if r.get("ok") else 400)
 
 
 
