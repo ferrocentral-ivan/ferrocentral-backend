@@ -48,7 +48,7 @@ app.config["SESSION_COOKIE_DOMAIN"] = ".ferrocentral.com.bo"
 
 # ✅ IMPORTANTE: como tu front y tu api comparten el mismo dominio base,
 # NO necesitas SameSite=None. Lax es más estable en Chrome/Edge.
-app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SAMESITE"] = "None"
 
 app.config["SESSION_COOKIE_SECURE"] = True
 app.config["SESSION_COOKIE_HTTPONLY"] = True
