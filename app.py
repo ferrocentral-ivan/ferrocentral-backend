@@ -44,7 +44,8 @@ app = Flask(__name__, static_folder='.', static_url_path='')
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY")  # Render ENV
 
 # ✅ Cookie compartida por subdominios (ferrocentral.com.bo y api.ferrocentral.com.bo)
-app.config["SESSION_COOKIE_DOMAIN"] = ".ferrocentral.com.bo"
+app.config["SESSION_COOKIE_DOMAIN"] = "ferrocentral.com.bo"
+
 
 # ✅ IMPORTANTE: como tu front y tu api comparten el mismo dominio base,
 # NO necesitas SameSite=None. Lax es más estable en Chrome/Edge.
