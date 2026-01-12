@@ -8,6 +8,10 @@ SHEET_PRECIOS = "NUEVA LISTA DE PRECIOS"
 JSON_IN = "productos_precios.json"
 JSON_OUT = "productos_precios.json"
 
+TIPO_CAMBIO = float(os.getenv("TIPO_CAMBIO", "6.96"))
+
+
+
 # Intentaremos usar el Excel subido por el panel (cualquier extensión común)
 EXCEL_CANDIDATES = [
     "proveedor.xlsm",
@@ -109,17 +113,20 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
     # Ajusta aquí si tu columna real cambia.
     price_map = {}
     rows = 0
-    for r in ws.iter_rows(min_row=13, values_only=True):
-        rows += 1
-        codigo = r[1]   # B: CODIGO
-        precio_bs = r[7]  # H: PRECIO BS-.
+    for r in ws.iter_rows(min_row=3, values_only=True):
+        codigo = r[1]          # B: IGO (código numérico, ej 57023)
+        precio_usd = r[7]      # H: P/U (USD) en "NUEVA LISTA DE PRECIOS"
+
         if codigo is None:
-            continue
+             continue
+
         code = str(codigo).strip().replace(".0", "")
-        pbs = to_float(precio_bs)
-        if pbs is None:
-            continue
-        price_map[code] = pbs
+        usd = to_float(precio_usd)
+        if usd is None:
+             continue
+
+        price_map[code] = usd
+
 
     # 4) Cargar JSON base
     with open(json_in_path, "r", encoding="utf-8") as f:
@@ -141,8 +148,10 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
             missing += 1
             continue
 
-        precio_lista_bs = price_map[code]
+        precio_usd = price_map[code]
+        precio_lista_bs = precio_usd * TIPO_CAMBIO
         costo_bs = precio_lista_bs * (1.0 - float(descuento_proveedor))
+
 
         # ===== TU REGLA DE MARGEN (EJEMPLO POR TRAMOS) =====
         # Ajusta a tu regla real si quieres:
