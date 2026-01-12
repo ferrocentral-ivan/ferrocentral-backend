@@ -1,195 +1,177 @@
 from openpyxl import load_workbook
 import os
 import json
+from typing import Optional, Tuple
 
-# Hoja con los ítems/precios
 SHEET_PRECIOS = "NUEVA LISTA DE PRECIOS"
-# Hoja donde está el descuento del proveedor
-SHEET_PEDIDO = "HOJA PEDIDO"
-DISCOUNT_CELL = "G6"
-
-# Columnas (según tu Excel)
-# C = código, H = precio unitario USD, I = precio en Bs
-CODE_COL = 3
-USD_COL = 8
-BS_COL = 9
-
-# Tipo de cambio de respaldo (solo si faltara Bs)
-DEFAULT_TC = 6.96
 
 JSON_IN = "productos_precios.json"
 JSON_OUT = "productos_precios.json"
 
-def _to_float(x):
+# Intentaremos usar el Excel subido por el panel (cualquier extensión común)
+EXCEL_CANDIDATES = [
+    "proveedor.xlsm",
+    "proveedor.xlsx",
+    "proveedor.xls",
+    # fallback si aún usas el nombre viejo:
+    "NOTA DE PEDIDO VER. 8-12-2025 OFICIAL.xlsm",
+]
+
+def to_float(x):
     try:
         if x is None:
             return None
-        if isinstance(x, str):
-            x = x.strip().replace(",", "")
-            if x.endswith("%"):
-                x = x[:-1]
         return float(x)
-    except Exception:
+    except:
         return None
 
-def _norm_descuento(val):
-    """
-    Acepta: 0.2, 20, "20%", "0.20"
-    Devuelve: 0.20
-    """
-    f = _to_float(val)
-    if f is None:
-        return 0.0
-    if f > 1.0:
-        f = f / 100.0
-    if f < 0:
-        f = 0.0
-    if f > 0.90:
-        f = 0.90
-    return round(f, 4)
+def _find_excel_path(base_dir: str) -> Tuple[Optional[str], list]:
+    checked = []
+    for name in EXCEL_CANDIDATES:
+        p = os.path.join(base_dir, name)
+        checked.append(p)
+        if os.path.exists(p):
+            return p, checked
+    return None, checked
 
-def margen_por_costo_bs(costo_bs: float) -> float:
+def _parse_discount_cell(v) -> Optional[float]:
     """
-    Regla simple (ajústala si quieres):
-    - más margen en productos baratos
-    - menos margen en productos caros
+    Convierte valores tipo:
+    - 0.2  -> 0.2
+    - 20   -> 0.2 (si alguien puso 20 en vez de 20%)
+    - "20%" -> 0.2
     """
-    if costo_bs <= 50:
-        return 0.35
-    if costo_bs <= 150:
-        return 0.30
-    if costo_bs <= 400:
-        return 0.25
-    if costo_bs <= 800:
-        return 0.20
-    return 0.15
+    if v is None:
+        return None
 
-def actualizar_precios():
+    if isinstance(v, str):
+        s = v.strip().replace(",", ".")
+        if s.endswith("%"):
+            s = s[:-1].strip()
+        try:
+            v = float(s)
+        except:
+            return None
+
+    try:
+        v = float(v)
+    except:
+        return None
+
+    # si viene como 20 (en vez de 0.20)
+    if v > 1:
+        v = v / 100.0
+
+    # clamp básico
+    if v < 0 or v > 0.95:
+        return None
+
+    return v
+
+def actualizar_precios(descuento_proveedor: Optional[float] = None):
+    """
+    - Lee el Excel del proveedor
+    - Lee descuento desde G6 (si descuento_proveedor es None)
+    - Actualiza productos_precios.json
+    Retorna métricas.
+    """
     base_dir = os.path.dirname(os.path.abspath(__file__))
 
-    # El upload del backend guarda "proveedor.<ext>" y setea EXCEL_FILE en env
-    excel_name = os.environ.get("EXCEL_FILE", "proveedor.xlsm").strip()
-    excel_path = os.path.join(base_dir, excel_name)
-
-    # fallback por si EXCEL_FILE no está o no existe
-    if not os.path.exists(excel_path):
-        for alt in ("proveedor.xlsm", "proveedor.xlsx", "proveedor.xls"):
-            alt_path = os.path.join(base_dir, alt)
-            if os.path.exists(alt_path):
-                excel_path = alt_path
-                excel_name = alt
-                break
-
+    excel_path, checked = _find_excel_path(base_dir)
     json_in_path = os.path.join(base_dir, JSON_IN)
     json_out_path = os.path.join(base_dir, JSON_OUT)
 
-    if not os.path.exists(excel_path):
-        return {"ok": False, "error": f"No encuentro el Excel subido en backend. Busqué: {excel_name}"}
+    if not excel_path:
+        return {"ok": False, "error": "No encuentro el Excel del proveedor", "checked": checked}
 
     if not os.path.exists(json_in_path):
-        return {"ok": False, "error": "No encuentro productos_precios.json en el backend"}
+        return {"ok": False, "error": "No encuentro productos_precios.json", "path": json_in_path}
 
-    # Cargar JSON actual
-    with open(json_in_path, "r", encoding="utf-8") as f:
-        productos = json.load(f)
-
-    # Leer Excel
     wb = load_workbook(excel_path, data_only=True, keep_vba=True)
 
+    # 1) Descuento desde G6 en la hoja principal
+    ws_header = wb["HOJA PEDIDO"] if "HOJA PEDIDO" in wb.sheetnames else wb.active
+    descuento_excel = _parse_discount_cell(ws_header["G6"].value)
+
+    if descuento_proveedor is None:
+        descuento_proveedor = descuento_excel if descuento_excel is not None else 0.20
+    else:
+        # si te mandan un override, igual lo normalizamos
+        descuento_proveedor = _parse_discount_cell(descuento_proveedor) or descuento_proveedor
+
+    # 2) Hoja de precios
     if SHEET_PRECIOS not in wb.sheetnames:
-        return {"ok": False, "error": f"No existe la hoja '{SHEET_PRECIOS}'"}
+        return {"ok": False, "error": f"No existe la hoja '{SHEET_PRECIOS}'", "sheets": wb.sheetnames}
 
     ws = wb[SHEET_PRECIOS]
 
-    descuento = 0.0
-    if SHEET_PEDIDO in wb.sheetnames:
-        ws_pedido = wb[SHEET_PEDIDO]
-        descuento = _norm_descuento(ws_pedido[DISCOUNT_CELL].value)
-
-    # Construir mapa código -> (usd, bs)
+    # 3) Mapa codigo -> precio Bs (columna H según tu layout: PRECIO BS-.)
+    # Ajusta aquí si tu columna real cambia.
     price_map = {}
-    filas = 0
-
-    # Tu data empieza cerca de la fila 13 (por cómo se ve el formato).
-    # Si tu Excel cambia, ajustamos este start.
-    START_ROW = 13
-
-    for r in range(START_ROW, ws.max_row + 1):
-        code = ws.cell(row=r, column=CODE_COL).value
-        if code is None:
+    rows = 0
+    for r in ws.iter_rows(min_row=13, values_only=True):
+        rows += 1
+        codigo = r[1]   # B: CODIGO
+        precio_bs = r[7]  # H: PRECIO BS-.
+        if codigo is None:
             continue
-
-        code = str(code).strip()
-        usd = _to_float(ws.cell(row=r, column=USD_COL).value)
-        bs = _to_float(ws.cell(row=r, column=BS_COL).value)
-
-        # si no hay usd ni bs, saltar
-        if usd is None and bs is None:
+        code = str(codigo).strip().replace(".0", "")
+        pbs = to_float(precio_bs)
+        if pbs is None:
             continue
+        price_map[code] = pbs
 
-        filas += 1
-        price_map[code] = {"usd": usd, "bs": bs}
+    # 4) Cargar JSON base
+    with open(json_in_path, "r", encoding="utf-8") as f:
+        productos = json.load(f)
 
-    # Aplicar a productos
-    actualizados = 0
+    updated = 0
     missing = 0
 
+    # 5) Aplicar descuento y reglas
+    # IMPORTANTE: aquí tú ya tenías tu lógica de margen por "producto pequeño vs grande".
+    # Yo mantengo el esquema básico: costo = precio_bs*(1-desc) y luego tu margen según tramos.
+    # Si tu app.py ya aplica el margen en otro sitio, lo ajustamos ahí.
     for p in productos:
-        code = str(p.get("code") or "").strip()
+        code = str(p.get("code") or p.get("codigo") or "").strip()
         if not code:
             continue
 
-        row = price_map.get(code)
-        if not row:
+        if code not in price_map:
             missing += 1
             continue
 
-        usd = row["usd"]
-        bs = row["bs"]
+        precio_lista_bs = price_map[code]
+        costo_bs = precio_lista_bs * (1.0 - float(descuento_proveedor))
 
-        # Costo real con descuento (en USD) si hay usd
-        usd_desc = None
-        if usd is not None:
-            usd_desc = usd * (1.0 - descuento)
-
-        # Costo base en Bs:
-        # Preferimos Bs del Excel (porque tu tienda trabaja en Bs).
-        # Si no viene Bs, calculamos por TC.
-        if bs is None:
-            if usd_desc is None:
-                continue
-            costo_bs = usd_desc * DEFAULT_TC
+        # ===== TU REGLA DE MARGEN (EJEMPLO POR TRAMOS) =====
+        # Ajusta a tu regla real si quieres:
+        if costo_bs < 30:
+            margen = 0.45
+        elif costo_bs < 80:
+            margen = 0.35
+        elif costo_bs < 200:
+            margen = 0.28
         else:
-            # Importante:
-            # En muchos Excels, la columna Bs YA refleja el descuento si el archivo
-            # viene calculado por el proveedor. Si no, igual está bien porque además
-            # guardamos "descuento" para trazabilidad.
-            costo_bs = bs
+            margen = 0.20
 
-        # Tu precio web final con tu margen escalonado
-        margen = margen_por_costo_bs(costo_bs)
-        bs_web = round(costo_bs * (1.0 + margen), 2)
+        precio_web_bs = round(costo_bs * (1.0 + margen), 2)
 
-        # Guardar en el JSON que consume tu tienda
-        if usd_desc is not None:
-            p["usd_price_unit"] = round(usd_desc, 4)
-            p["precio_unitario_usd"] = round(usd_desc, 4)
+        p["precio_lista_bs"] = round(precio_lista_bs, 2)
+        p["costo_bs"] = round(costo_bs, 2)
+        p["bs_price_web"] = precio_web_bs
 
-        p["bs_cost"] = round(costo_bs, 2)
-        p["bs_price_web"] = bs_web
-        p["margen"] = round(margen, 4)
+        updated += 1
 
-        actualizados += 1
-
-    # Guardar
     with open(json_out_path, "w", encoding="utf-8") as f:
         json.dump(productos, f, ensure_ascii=False)
 
     return {
         "ok": True,
-        "updated": actualizados,
-        "excel_rows": filas,
+        "excel": os.path.basename(excel_path),
+        "filas_excel": rows,
+        "actualizados": updated,
         "missing": missing,
-        "descuento": descuento,
-        "excel_file": excel_name,
+        "descuento": float(descuento_proveedor),
+        "descuento_excel_g6": descuento_excel,
     }

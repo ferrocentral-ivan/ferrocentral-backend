@@ -1201,6 +1201,31 @@ def api_producto_por_codigo(code):
     return jsonify({"ok": False, "error": "Producto no encontrado"}), 404
 
 
+@app.route("/api/catalogo")
+def api_catalogo():
+    """
+    Devuelve TODO el catálogo que usa la tienda (UN SOLO ORIGEN):
+    productos_precios.json
+    """
+    import json
+    import os
+    from flask import jsonify, make_response
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(base_dir, "productos_precios.json")
+
+    if not os.path.exists(path):
+        return jsonify({"ok": False, "error": "No existe productos_precios.json"}), 404
+
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    resp = make_response(jsonify(data))
+    # Evitar que el navegador se quede con precios viejos
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
+
 
 @app.get("/api/admin_stats")
 @require_role("SUPER_ADMIN", "ADMIN")
