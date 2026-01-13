@@ -7,6 +7,8 @@ from backend.database import get_connection, create_tables
 from werkzeug.security import generate_password_hash, check_password_hash
 from actualizar_precios_openpyxl import actualizar_precios
 from werkzeug.utils import secure_filename
+import traceback
+
 
 
 
@@ -48,7 +50,7 @@ app.config["SESSION_COOKIE_DOMAIN"] = "ferrocentral.com.bo"
 
 # ✅ IMPORTANTE: como tu front y tu api comparten el mismo dominio base,
 # NO necesitas SameSite=None. Lax es más estable en Chrome/Edge.
-app.config["SESSION_COOKIE_SAMESITE"] = "None"
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 app.config["SESSION_COOKIE_SECURE"] = True
 app.config["SESSION_COOKIE_HTTPONLY"] = True
@@ -56,9 +58,6 @@ app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
 
 
 
-
-
-from flask import jsonify
 
 
 
@@ -206,23 +205,6 @@ bootstrap_super_admin()
 
 
 # ---------------- RUTAS DE PÁGINAS ----------------
-
-@app.get("/api/admin/_migrate_pedido_items_unique")
-@require_role("SUPER_ADMIN")
-def migrate_pedido_items_unique():
-    try:
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute("""
-            ALTER TABLE pedido_items
-            ADD CONSTRAINT pedido_items_pedido_producto_unique
-            UNIQUE (pedido_id, producto_id);
-        """)
-        conn.commit()
-        conn.close()
-        return jsonify({"ok": True, "message": "UNIQUE creado correctamente"})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 400
 
 
 
@@ -644,7 +626,16 @@ def api_pedido_actualizar_cotizacion(pedido_id):
 
         for it in items:
             try:
-                producto_id = int(it.get("producto_id"))
+             producto_id = str(it.get("producto_id") or "").strip()
+             if not producto_id:
+                continue
+                # normaliza "17823.0" -> "17823"
+             if producto_id.endswith(".0"):
+                try:
+                    producto_id = str(int(float(producto_id)))
+                except Exception:
+                    pass
+
                 cantidad = float(it.get("cantidad", 0))
                 precio_unit = float(it.get("precio_unit", 0))
             except Exception:
@@ -690,17 +681,14 @@ def api_pedido_actualizar_cotizacion(pedido_id):
         }), 500
 
 
-from flask import send_file
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
-import os
+
 
 @app.route("/api/facturar/<int:pedido_id>")
 @require_role("SUPER_ADMIN", "ADMIN")
-
 def generar_factura_pdf(pedido_id):
-    # 1. Obtener datos del pedido + empresa + descuento
     conn = get_connection()
     cur = conn.cursor()
 
@@ -721,93 +709,86 @@ def generar_factura_pdf(pedido_id):
 
     if not row:
         conn.close()
-        return "Pedido no encontrado", 404
+        return jsonify({"ok": False, "error": "Pedido no encontrado"}), 404
 
-    (
-        p_id, p_fecha, p_total, p_estado, p_notas,
-        e_razon, e_nit, e_contacto, e_tel, e_correo,
-        e_desc
-    ) = row
+    # row es dict -> sacar por claves
+    p_id     = row["id"]
+    p_fecha  = row["fecha"]
+    p_total  = row["total"]
+    p_estado = row["estado"]
+    p_notas  = row.get("notas") or ""
 
-    # Items del pedido (precio_unit = precio BASE sin descuento)
+    e_razon   = row.get("razon_social") or ""
+    e_nit     = row.get("nit") or ""
+    e_contacto= row.get("contacto") or ""
+    e_tel     = row.get("telefono") or ""
+    e_correo  = row.get("correo") or ""
+    e_desc    = float(row.get("descuento") or 0)
+
+    # Items (también vienen como dict)
     cur.execute("""
         SELECT descripcion, cantidad, precio_unit
         FROM pedido_items
         WHERE pedido_id = %s
+        ORDER BY producto_id ASC
     """, (pedido_id,))
     items_db = cur.fetchall()
-    
 
-    items = [
-        {
-            "descripcion": d,
-            "cantidad": c,
-            "precio_unit": float(pu)
-        }
-        for (d, c, pu) in items_db
-    ]
+    items = []
+    for r in items_db:
+        items.append({
+            "descripcion": (r.get("descripcion") or ""),
+            "cantidad": float(r.get("cantidad") or 0),
+            "precio_unit": float(r.get("precio_unit") or 0),
+        })
 
+    # Marcar como facturado
     cur.execute("UPDATE pedidos SET estado = 'facturado' WHERE id = %s", (pedido_id,))
     conn.commit()
-    audit("PEDIDO_FACTURADO", "pedido", pedido_id, {"total": float(p_total)})
-    
+    audit("PEDIDO_FACTURADO", "pedido", pedido_id, {"total": float(p_total or 0)})
     conn.close()
 
-
-    # 2. Preparar PDF
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    facturas_dir = os.path.join(base_dir, "facturas")
-    os.makedirs(facturas_dir, exist_ok=True)
-
-    filename = f"factura_{pedido_id}.pdf"
-    filepath = os.path.join(facturas_dir, filename)
-
-    c = canvas.Canvas(filepath, pagesize=letter)
+    # Generar PDF en memoria (más seguro que guardar archivo en Render)
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=letter)
     width, height = letter
 
-    # --- CABECERA ROJA ---
-    c.setFillColorRGB(0.88, 0.22, 0.22)  # rojo
+    def _pdf_text(s):
+        if s is None:
+            return ""
+        s = str(s)
+        return s.encode("cp1252", errors="replace").decode("cp1252")
+
+
+    # Franja roja
+    c.setFillColorRGB(0.88, 0.22, 0.22)
     c.rect(0, height - 80, width, 80, fill=1, stroke=0)
 
-    # Título
     c.setFillColor(colors.white)
     c.setFont("Helvetica-Bold", 20)
     c.drawCentredString(width / 2, height - 50, "FACTURA PROFORMA")
 
-    # Número de factura a la derecha
     c.setFont("Helvetica-Bold", 12)
     c.drawRightString(width - 40, height - 30, f"Nº {pedido_id}")
 
-        # --- LOGO DE LA EMPRESA ---
+    # Logo (si existe)
+    base_dir = os.path.dirname(os.path.abspath(__file__))
     logo_path = os.path.join(base_dir, "img", "logos", "logo_empresa.png")
-    print("RUTA LOGO:", logo_path, "EXISTE%s", os.path.exists(logo_path))  # debug
-
     if os.path.exists(logo_path):
         try:
-            # tamaño fijo y seguro dentro de la franja roja
-            logo_width = 280     # ancho del logo en puntos
-            logo_height = 120     # alto del logo en puntos
-
-            # lo colocamos un poco debajo del borde superior
-            logo_x = -30
-            logo_y = height - 70 - logo_height + 10   # justo dentro de la franja roja
-
             c.drawImage(
                 logo_path,
-                logo_x,
-                logo_y,
-                width=logo_width,
-                height=logo_height,
+                -30,
+                height - 70 - 120 + 10,
+                width=280,
+                height=120,
                 preserveAspectRatio=True,
-                mask='auto',
+                mask="auto",
             )
         except Exception as e:
-            print("⚠️ ERROR dibujando el logo:", e)
-    else:
-        print("⚠️ NO se encontró el logo en:", logo_path)
+            print("⚠️ ERROR dibujando logo:", e)
 
-
-    # --- DATOS DE LA EMPRESA (a la derecha del logo) ---
+    # Datos empresa
     c.setFillColor(colors.black)
     c.setFont("Helvetica-Bold", 11)
     c.drawString(170, height - 110, "Distribuidora FerroCentral")
@@ -816,31 +797,29 @@ def generar_factura_pdf(pedido_id):
     c.drawString(170, height - 140, "Of: Calle David Avestegui #555 Queru Queru Central")
     c.drawString(170, height - 155, "Tel.Fijo: 4792110 - WhatsApp: 76920918")
 
-    # --- DATOS DEL CLIENTE ---
+    # Datos cliente
     y = height - 190
     c.setFont("Helvetica-Bold", 11)
     c.drawString(40, y, "Datos del cliente")
     y -= 15
     c.setFont("Helvetica", 10)
-    c.drawString(40, y, f"Razón social: {e_razon}")
+    c.drawString(40, y, _pdf_text(f"Razón social: {e_razon}"))
     y -= 12
-    c.drawString(40, y, f"NIT: {e_nit}")
+    c.drawString(40, y, _pdf_text(f"NIT: {e_nit}"))
     y -= 12
-    c.drawString(40, y, f"Contacto: {e_contacto}")
+    c.drawString(40, y, _pdf_text(f"Contacto: {e_contacto}"))
     y -= 12
-    c.drawString(40, y, f"Teléfono: {e_tel}")
+    c.drawString(40, y, _pdf_text(f"Teléfono: {e_tel}"))
     y -= 12
-    c.drawString(40, y, f"Correo: {e_correo}")
+    c.drawString(40, y, _pdf_text(f"Correo: {e_correo}"))
     y -= 12
     c.drawString(40, y, f"Descuento aplicado: {e_desc:.2f}%")
 
-    # Línea separadora
     y -= 10
     c.line(40, y, width - 40, y)
     y -= 20
 
-    # --- TABLA DE ITEMS ---
-    # Encabezados
+    # Tabla
     c.setFont("Helvetica-Bold", 10)
     c.drawString(40,  y, "Descripción")
     c.drawString(360, y, "Cant.")
@@ -853,41 +832,43 @@ def generar_factura_pdf(pedido_id):
 
     c.setFont("Helvetica", 8)
 
-    total_desc = 0
+    total_desc = 0.0
     for it in items:
-        desc = it["descripcion"]
+        desc = _pdf_text(it["descripcion"])
         cant = it["cantidad"]
         p_base = it["precio_unit"]
         p_desc = p_base * (1 - e_desc / 100.0)
         sub = cant * p_desc
         total_desc += sub
 
-        # Descripción (ajustar ancho)
         c.drawString(40, y, desc[:70])
-        c.drawRightString(390, y, str(cant))
+        c.drawRightString(390, y, f"{cant:g}")
         c.drawRightString(455, y, f"{p_base:.2f}")
         c.drawRightString(525, y, f"{p_desc:.2f}")
         c.drawRightString(width - 40, y, f"{sub:.2f}")
 
         y -= 12
-        if y < 80:  # salta de página si se acaba el espacio
+        if y < 80:
             c.showPage()
             y = height - 80
             c.setFont("Helvetica", 9)
 
-    # Línea antes del total
     y -= 10
     c.line(350, y, width - 40, y)
     y -= 15
-
     c.setFont("Helvetica-Bold", 11)
     c.drawRightString(width - 40, y, f"TOTAL (con descuento): Bs {total_desc:.2f}")
 
     c.showPage()
     c.save()
+    buffer.seek(0)
 
-    return send_file(filepath, as_attachment=False)
-
+    return send_file(
+        buffer,
+        as_attachment=False,
+        download_name=f"factura_{pedido_id}.pdf",
+        mimetype="application/pdf",
+    )
 
 
 @app.route("/api/reporte_facturados")
@@ -1177,7 +1158,8 @@ def serve_img(filename):
 
 # ---------------- RUTAS API ----------------
 
-from flask import send_file, make_response
+from flask import make_response
+
 
 @app.route("/api/productos_precios.json", methods=["GET"])
 def api_productos_precios_json():
