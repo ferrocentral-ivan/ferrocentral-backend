@@ -7,7 +7,6 @@ from backend.database import get_connection, create_tables
 from werkzeug.security import generate_password_hash, check_password_hash
 from actualizar_precios_openpyxl import actualizar_precios
 from werkzeug.utils import secure_filename
-from sqlalchemy.exc import SQLAlchemyError
 
 
 
@@ -913,27 +912,44 @@ def reporte_facturados():
 
     c.setFont("Helvetica", 8)
 
-    for (pid, fecha, total, razon, nit) in rows:
+    for r in rows:
+        pid = r["id"]
+        fecha = r["fecha"]
+        total = r["total"]
+        razon = r.get("razon_social") or r.get("razon") or ""
+        nit = r.get("nit") or ""
+
+    # fecha puede venir como datetime o string
+        if hasattr(fecha, "strftime"):
+            fecha_str = fecha.strftime("%Y-%m-%d %H:%M")
+        else:
+            fecha_str = str(fecha)
+
         if y < 60:
             c.showPage()
-            y = height - 40
             c.setFont("Helvetica-Bold", 9)
-            c.drawString(40,  y, "Fecha")
-            c.drawString(150, y, "Empresa")
-            c.drawString(360, y, "NIT")
-            c.drawString(430, y, "Pedido")
-            c.drawString(500, y, "Total (Bs)")
-            y -= 12
-            c.line(40, y, width - 40, y)
-            y -= 14
+            c.drawString(40,  height - 40, "Fecha")
+            c.drawString(150, height - 40, "Empresa")
+            c.drawString(360, height - 40, "NIT")
+            c.drawString(430, height - 40, "Pedido")
+            c.drawString(500, height - 40, "Total (Bs)")
+            y = height - 60
             c.setFont("Helvetica", 8)
 
-        c.drawString(40,  y, str(fecha))
-        c.drawString(150, y, (razon or "")[:28])
-        c.drawString(360, y, nit or "")
-        c.drawString(430, y, f"#{pid}")
-        c.drawRightString(width - 40, y, f"{float(total):.2f}")
+        c.drawString(40,  y, fecha_str)
+        c.drawString(150, y, razon[:32])
+        c.drawString(360, y, str(nit))
+        c.drawString(430, y, str(pid))
+        safe_total = 0.0
+        try:
+            safe_total = float(total or 0)
+        except Exception:
+            safe_total = 0.0
+
+        c.drawRightString(width - 40, y, f"{safe_total:.2f}")
+
         y -= 12
+
 
     c.showPage()
     c.save()
@@ -945,46 +961,6 @@ def reporte_facturados():
         download_name="ventas_facturadas.pdf",
         mimetype="application/pdf",
     )
-
-@app.route("/api/cotizacion/<int:pedido_id>", methods=["POST"])
-def guardar_cotizacion(pedido_id):
-    try:
-        data = request.json
-        if not data:
-            return jsonify({"ok": False, "error": "No data received"}), 400
-
-        pedido = Pedido.query.get(pedido_id)
-        if not pedido:
-            return jsonify({"ok": False, "error": "Pedido no encontrado"}), 404
-
-        # Guardar totales
-        pedido.total_web = data.get("total_web", pedido.total_web)
-        pedido.total_final = data.get("total_final", pedido.total_final)
-
-        # Guardar detalle si viene
-        if "items" in data:
-            for item in data["items"]:
-                detalle = PedidoDetalle.query.filter_by(
-                    pedido_id=pedido_id,
-                    producto_codigo=item.get("codigo")
-                ).first()
-
-                if detalle:
-                    detalle.cantidad = item.get("cantidad", detalle.cantidad)
-                    detalle.precio_final = item.get("precio_final", detalle.precio_final)
-                    detalle.subtotal = item.get("subtotal", detalle.subtotal)
-
-        db.session.commit()
-
-        return jsonify({"ok": True, "message": "Cotización guardada correctamente"})
-
-    except SQLAlchemyError as e:
-        db.session.rollback()
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-
 
 
 @app.route('/api/pedidos/<int:pedido_id>/estado', methods=['POST'])
