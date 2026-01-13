@@ -207,6 +207,25 @@ bootstrap_super_admin()
 
 # ---------------- RUTAS DE PÁGINAS ----------------
 
+@app.get("/api/admin/_migrate_pedido_items_unique")
+@require_role("SUPER_ADMIN")
+def migrate_pedido_items_unique():
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            ALTER TABLE pedido_items
+            ADD CONSTRAINT pedido_items_pedido_producto_unique
+            UNIQUE (pedido_id, producto_id);
+        """)
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "message": "UNIQUE creado correctamente"})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+
+
 @app.route("/api/admins", methods=["POST"])
 @require_role("SUPER_ADMIN")
 def crear_admin():
@@ -638,10 +657,14 @@ def api_pedido_actualizar_cotizacion(pedido_id):
             total += subtotal
 
             cur.execute("""
-                UPDATE pedido_items
-                SET cantidad = %s, precio_unit = %s
-                WHERE pedido_id = %s AND producto_id = %s
-            """, (cantidad, precio_unit, pedido_id, producto_id))
+                INSERT INTO pedido_items (pedido_id, producto_id, descripcion, cantidad, precio_unit)
+                VALUES (%s, %s, COALESCE((SELECT descripcion FROM pedido_items WHERE pedido_id=%s AND producto_id=%s), ''), %s, %s)
+                ON CONFLICT (pedido_id, producto_id)
+                DO UPDATE SET
+                    cantidad = EXCLUDED.cantidad,
+                    precio_unit = EXCLUDED.precio_unit
+            """, (pedido_id, producto_id, pedido_id, producto_id, cantidad, precio_unit))
+
 
         cur.execute(
             "UPDATE pedidos SET total = %s WHERE id = %s",
