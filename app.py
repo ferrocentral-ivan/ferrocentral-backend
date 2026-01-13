@@ -608,7 +608,6 @@ def api_pedido_detalle(pedido_id):
 @require_role("SUPER_ADMIN", "ADMIN")
 def api_pedido_actualizar_cotizacion(pedido_id):
     try:
-        # 1) Leer JSON de forma segura (sin force=True)
         data = request.get_json(silent=True) or {}
         items = data.get("items", [])
 
@@ -618,7 +617,7 @@ def api_pedido_actualizar_cotizacion(pedido_id):
         conn = get_connection()
         cur = conn.cursor()
 
-        # 2) Permisos (ADMIN solo sus pedidos)
+        # Permisos: ADMIN solo puede tocar sus pedidos
         blocked = forbid_if_not_owner(cur, pedido_id)
         if blocked:
             conn.close()
@@ -628,16 +627,19 @@ def api_pedido_actualizar_cotizacion(pedido_id):
         guardados = 0
 
         for it in items:
-            # Validación robusta por item
             try:
-                producto_id = it.get("producto_id", None)
-                if producto_id is None or str(producto_id).strip() == "":
+                # producto_id: intenta int (lo más compatible con Postgres)
+                producto_id_raw = it.get("producto_id", None)
+                if producto_id_raw is None or str(producto_id_raw).strip() == "":
                     continue
 
-                # OJO: producto_id puede ser texto o número según tu BD.
-                # Para no romper nada, lo enviamos como STRING siempre:
-                producto_id = str(producto_id).strip()
+                try:
+                    producto_id = int(float(str(producto_id_raw).strip()))
+                except Exception:
+                    # fallback: si realmente tu BD lo tiene como texto
+                    producto_id = str(producto_id_raw).strip()
 
+                descripcion = (it.get("descripcion") or "").strip()
                 cantidad = float(it.get("cantidad", 0) or 0)
                 precio_unit = float(it.get("precio_unit", 0) or 0)
             except Exception:
@@ -649,15 +651,16 @@ def api_pedido_actualizar_cotizacion(pedido_id):
             subtotal = cantidad * precio_unit
             total += subtotal
 
-            # 3) UPSERT: inserta si no existe, actualiza si existe
+            # UPSERT incluyendo descripcion (clave para que no quede vacío ni rompa NOT NULL)
             cur.execute("""
-                INSERT INTO pedido_items (pedido_id, producto_id, cantidad, precio_unit)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO pedido_items (pedido_id, producto_id, descripcion, cantidad, precio_unit)
+                VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (pedido_id, producto_id)
                 DO UPDATE SET
+                    descripcion = EXCLUDED.descripcion,
                     cantidad = EXCLUDED.cantidad,
                     precio_unit = EXCLUDED.precio_unit
-            """, (pedido_id, producto_id, cantidad, precio_unit))
+            """, (pedido_id, producto_id, descripcion, cantidad, precio_unit))
 
             guardados += 1
 
@@ -665,7 +668,6 @@ def api_pedido_actualizar_cotizacion(pedido_id):
             conn.close()
             return jsonify({"ok": False, "error": "No se guardó ningún item válido"}), 400
 
-        # 4) Actualizar total del pedido
         cur.execute("UPDATE pedidos SET total = %s WHERE id = %s", (total, pedido_id))
 
         conn.commit()
@@ -676,6 +678,7 @@ def api_pedido_actualizar_cotizacion(pedido_id):
 
     except Exception as e:
         print("❌ ERROR GUARDAR COTIZACIÓN:", str(e))
+        print(traceback.format_exc())
         return jsonify({
             "ok": False,
             "error": "Error interno al guardar cotización",
