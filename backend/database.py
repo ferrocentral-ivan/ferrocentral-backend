@@ -73,7 +73,7 @@ def create_tables():
     );
     """)
 
-    # ===== ITEMS =====
+        # ===== ITEMS =====
     cur.execute("""
     CREATE TABLE IF NOT EXISTS pedido_items (
         id SERIAL PRIMARY KEY,
@@ -81,9 +81,11 @@ def create_tables():
         producto_id TEXT NOT NULL,
         descripcion TEXT NOT NULL,
         cantidad INTEGER NOT NULL,
-        precio_unit DOUBLE PRECISION NOT NULL
+        precio_unit DOUBLE PRECISION NOT NULL,
+        UNIQUE (pedido_id, producto_id)
     );
     """)
+
 
     # ===== PRODUCT OVERRIDES (tu app.py lo usa) =====
     cur.execute("""
