@@ -656,14 +656,18 @@ def api_pedido_actualizar_cotizacion(pedido_id):
             subtotal = cantidad * precio_unit
             total += subtotal
 
+            descripcion = (it.get("descripcion") or "").strip()
+
             cur.execute("""
                 INSERT INTO pedido_items (pedido_id, producto_id, descripcion, cantidad, precio_unit)
-                VALUES (%s, %s, COALESCE((SELECT descripcion FROM pedido_items WHERE pedido_id=%s AND producto_id=%s), ''), %s, %s)
+                VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (pedido_id, producto_id)
                 DO UPDATE SET
+                    descripcion = EXCLUDED.descripcion,
                     cantidad = EXCLUDED.cantidad,
                     precio_unit = EXCLUDED.precio_unit
-            """, (pedido_id, producto_id, pedido_id, producto_id, cantidad, precio_unit))
+            """, (pedido_id, str(producto_id), descripcion, cantidad, precio_unit))
+
 
 
         cur.execute(
