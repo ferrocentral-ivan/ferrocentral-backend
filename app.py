@@ -605,57 +605,62 @@ def api_pedido_detalle(pedido_id):
 
 @app.route('/api/pedidos/<int:pedido_id>/cotizacion', methods=['POST'])
 @require_role("SUPER_ADMIN", "ADMIN")
-
 def api_pedido_actualizar_cotizacion(pedido_id):
-    data = request.get_json() or {}
-    items = data.get("items") or []
+    try:
+        data = request.get_json(force=True)
+        items = data.get("items", [])
 
-    if not isinstance(items, list) or not items:
-        return jsonify({"ok": False, "error": "Lista de items vacía"}), 400
+        if not isinstance(items, list) or not items:
+            return jsonify({"ok": False, "error": "Lista de items vacía"}), 400
 
-    conn = get_connection()
-    cur = conn.cursor()
+        conn = get_connection()
+        cur = conn.cursor()
 
-    blocked = forbid_if_not_owner(cur, pedido_id)
-    if blocked:
+        blocked = forbid_if_not_owner(cur, pedido_id)
+        if blocked:
+            conn.close()
+            return blocked
+
+        total = 0.0
+
+        for it in items:
+            try:
+                producto_id = int(it.get("producto_id"))
+                cantidad = float(it.get("cantidad", 0))
+                precio_unit = float(it.get("precio_unit", 0))
+            except Exception:
+                continue
+
+            if cantidad <= 0:
+                continue
+
+            subtotal = cantidad * precio_unit
+            total += subtotal
+
+            cur.execute("""
+                UPDATE pedido_items
+                SET cantidad = %s, precio_unit = %s
+                WHERE pedido_id = %s AND producto_id = %s
+            """, (cantidad, precio_unit, pedido_id, producto_id))
+
+        cur.execute(
+            "UPDATE pedidos SET total = %s WHERE id = %s",
+            (total, pedido_id)
+        )
+
+        conn.commit()
+        audit("PEDIDO_COTIZADO", "pedido", pedido_id, {"total": total})
         conn.close()
-        return blocked
 
+        return jsonify({"ok": True, "total": total})
 
-    total = 0.0
-
-    for it in items:
-        # producto_id
-        try:
-            producto_id = int(it.get("producto_id"))
-        except (TypeError, ValueError):
-            continue
-
-        # cantidad y precio
-        try:
-            cantidad = float(it.get("cantidad") or 0)
-            precio_unit = float(it.get("precio_unit") or 0)
-        except (TypeError, ValueError):
-            continue
-
-        subtotal = cantidad * precio_unit
-        total += subtotal
-
-        # actualizar item del pedido
-        cur.execute("""
-            UPDATE pedido_items
-            SET cantidad = %s, precio_unit = %s
-            WHERE pedido_id = %s AND producto_id = %s
-        """, (cantidad, precio_unit, pedido_id, producto_id))
-
-    # actualizar total del pedido
-    cur.execute("UPDATE pedidos SET total = %s WHERE id = %s", (total, pedido_id))
-
-    conn.commit()
-    audit("PEDIDO_COTIZADO", "pedido", pedido_id, {"total": total})
-    conn.close()
-
-    return jsonify({"ok": True, "total": total})
+    except Exception as e:
+        print("❌ ERROR GUARDAR COTIZACIÓN:", str(e))
+        return jsonify({
+            "ok": False,
+            "error": "Error interno al guardar cotización",
+            "detalle": str(e)
+        }), 500
 
 
 from flask import send_file
