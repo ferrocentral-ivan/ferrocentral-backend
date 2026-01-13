@@ -608,7 +608,8 @@ def api_pedido_detalle(pedido_id):
 @require_role("SUPER_ADMIN", "ADMIN")
 def api_pedido_actualizar_cotizacion(pedido_id):
     try:
-        data = request.get_json(force=True)
+        # 1) Leer JSON de forma segura (sin force=True)
+        data = request.get_json(silent=True) or {}
         items = data.get("items", [])
 
         if not isinstance(items, list) or not items:
@@ -617,27 +618,28 @@ def api_pedido_actualizar_cotizacion(pedido_id):
         conn = get_connection()
         cur = conn.cursor()
 
+        # 2) Permisos (ADMIN solo sus pedidos)
         blocked = forbid_if_not_owner(cur, pedido_id)
         if blocked:
             conn.close()
             return blocked
 
         total = 0.0
+        guardados = 0
 
         for it in items:
+            # Validación robusta por item
             try:
-             producto_id = str(it.get("producto_id") or "").strip()
-             if not producto_id:
-                continue
-                # normaliza "17823.0" -> "17823"
-             if producto_id.endswith(".0"):
-                try:
-                    producto_id = str(int(float(producto_id)))
-                except Exception:
-                    pass
+                producto_id = it.get("producto_id", None)
+                if producto_id is None or str(producto_id).strip() == "":
+                    continue
 
-                cantidad = float(it.get("cantidad", 0))
-                precio_unit = float(it.get("precio_unit", 0))
+                # OJO: producto_id puede ser texto o número según tu BD.
+                # Para no romper nada, lo enviamos como STRING siempre:
+                producto_id = str(producto_id).strip()
+
+                cantidad = float(it.get("cantidad", 0) or 0)
+                precio_unit = float(it.get("precio_unit", 0) or 0)
             except Exception:
                 continue
 
@@ -647,30 +649,30 @@ def api_pedido_actualizar_cotizacion(pedido_id):
             subtotal = cantidad * precio_unit
             total += subtotal
 
-            descripcion = (it.get("descripcion") or "").strip()
-
+            # 3) UPSERT: inserta si no existe, actualiza si existe
             cur.execute("""
-                INSERT INTO pedido_items (pedido_id, producto_id, descripcion, cantidad, precio_unit)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO pedido_items (pedido_id, producto_id, cantidad, precio_unit)
+                VALUES (%s, %s, %s, %s)
                 ON CONFLICT (pedido_id, producto_id)
                 DO UPDATE SET
-                    descripcion = EXCLUDED.descripcion,
                     cantidad = EXCLUDED.cantidad,
                     precio_unit = EXCLUDED.precio_unit
-            """, (pedido_id, str(producto_id), descripcion, cantidad, precio_unit))
+            """, (pedido_id, producto_id, cantidad, precio_unit))
 
+            guardados += 1
 
+        if guardados == 0:
+            conn.close()
+            return jsonify({"ok": False, "error": "No se guardó ningún item válido"}), 400
 
-        cur.execute(
-            "UPDATE pedidos SET total = %s WHERE id = %s",
-            (total, pedido_id)
-        )
+        # 4) Actualizar total del pedido
+        cur.execute("UPDATE pedidos SET total = %s WHERE id = %s", (total, pedido_id))
 
         conn.commit()
-        audit("PEDIDO_COTIZADO", "pedido", pedido_id, {"total": total})
+        audit("PEDIDO_COTIZADO", "pedido", pedido_id, {"total": total, "items": guardados})
         conn.close()
 
-        return jsonify({"ok": True, "total": total})
+        return jsonify({"ok": True, "total": total, "items_guardados": guardados})
 
     except Exception as e:
         print("❌ ERROR GUARDAR COTIZACIÓN:", str(e))
@@ -679,6 +681,7 @@ def api_pedido_actualizar_cotizacion(pedido_id):
             "error": "Error interno al guardar cotización",
             "detalle": str(e)
         }), 500
+
 
 
 from reportlab.pdfgen import canvas
@@ -711,19 +714,19 @@ def generar_factura_pdf(pedido_id):
         conn.close()
         return jsonify({"ok": False, "error": "Pedido no encontrado"}), 404
 
-    # row es dict -> sacar por claves
     p_id     = row["id"]
-    p_fecha  = row["fecha"]
-    p_total  = row["total"]
-    p_estado = row["estado"]
+    p_fecha  = row.get("fecha") or ""
+    p_total  = float(row.get("total") or 0)
+    p_estado = row.get("estado") or ""
     p_notas  = row.get("notas") or ""
 
-    e_razon   = row.get("razon_social") or ""
-    e_nit     = row.get("nit") or ""
-    e_contacto= row.get("contacto") or ""
-    e_tel     = row.get("telefono") or ""
-    e_correo  = row.get("correo") or ""
-    e_desc    = float(row.get("descuento") or 0)
+    e_razon    = row.get("razon_social") or ""
+    e_nit      = row.get("nit") or ""
+    e_contacto = row.get("contacto") or ""
+    e_tel      = row.get("telefono") or ""
+    e_correo   = row.get("correo") or ""
+    e_desc     = float(row.get("descuento") or 0)
+
 
     # Items (también vienen como dict)
     cur.execute("""
