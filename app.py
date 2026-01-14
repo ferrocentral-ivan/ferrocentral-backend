@@ -611,18 +611,9 @@ def api_pedido_detalle(pedido_id):
 @require_role("SUPER_ADMIN", "ADMIN")
 def api_pedido_actualizar_cotizacion(pedido_id):
     """
-    Guarda la cotización (cantidades y precio final) SIN tocar la descripción histórica.
-    Soporta tablas donde el precio esté en pedido_items.precio_final o pedido_items.precio_unit.
+    Guarda la cotización (cantidades y precio final) sin romper transacciones.
+    Detecta si existe pedido_items.precio_final; si no, usa pedido_items.precio_unit.
     """
-    def row_first_value(r):
-        if r is None:
-            return None
-        if isinstance(r, dict):
-            # primer valor del dict
-            return next(iter(r.values()), None)
-        if isinstance(r, (list, tuple)):
-            return r[0] if len(r) else None
-        return r
 
     data = request.get_json(silent=True) or {}
     items = data.get("items") or []
@@ -632,7 +623,35 @@ def api_pedido_actualizar_cotizacion(pedido_id):
 
     conn = get_connection()
     cur = conn.cursor()
+
     try:
+        # Seguridad: ADMIN solo accede a pedidos propios
+        blocked = forbid_if_not_owner(cur, pedido_id)
+        if blocked:
+            conn.close()
+            return blocked
+
+        # 1) Detectar columnas reales de pedido_items (evita “transaction aborted”)
+        cur.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'pedido_items'
+        """)
+        cols = {r["column_name"] if isinstance(r, dict) else r[0] for r in cur.fetchall()}
+
+        price_col = "precio_final" if "precio_final" in cols else "precio_unit"
+
+        # 2) UPSERT seguro (no prueba SQL inválido)
+        upsert_sql = f"""
+            INSERT INTO pedido_items (pedido_id, producto_id, descripcion, cantidad, {price_col})
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (pedido_id, producto_id)
+            DO UPDATE SET
+                cantidad = EXCLUDED.cantidad,
+                {price_col} = EXCLUDED.{price_col}
+        """
+
+        # 3) Guardar items
         for it in items:
             # producto_id
             try:
@@ -651,7 +670,7 @@ def api_pedido_actualizar_cotizacion(pedido_id):
             if cantidad < 1:
                 cantidad = 1
 
-            # precio final (tu admin manda precio_unit como "precio final")
+            # precio final: tu admin manda “precio_unit” como precio final cotizado
             raw_price = it.get("precio_unit", it.get("precio_final", 0))
             try:
                 if isinstance(raw_price, str):
@@ -662,126 +681,50 @@ def api_pedido_actualizar_cotizacion(pedido_id):
             if precio_final < 0:
                 precio_final = 0.0
 
-            # 1) Intentar UPDATE en columnas posibles
-            updated = False
-
-            # a) si existe precio_final
-            try:
-                cur.execute(
-                    """
-                    UPDATE pedido_items
-                       SET cantidad=%s,
-                           precio_final=%s
-                     WHERE pedido_id=%s AND producto_id=%s
-                    """,
-                    (cantidad, precio_final, pedido_id, producto_id),
-                )
-                if cur.rowcount and cur.rowcount > 0:
-                    updated = True
-            except Exception:
-                pass
-
-            # b) si existe precio_unit
-            if not updated:
-                try:
-                    cur.execute(
-                        """
-                        UPDATE pedido_items
-                           SET cantidad=%s,
-                               precio_unit=%s
-                         WHERE pedido_id=%s AND producto_id=%s
-                        """,
-                        (cantidad, precio_final, pedido_id, producto_id),
-                    )
-                    if cur.rowcount and cur.rowcount > 0:
-                        updated = True
-                except Exception:
-                    pass
-
-            # 2) Si no existía la fila, hacemos INSERT conservando/creando descripción
-            if not updated:
-                descripcion = None
-
-                # intenta tomar descripción de productos
+            # descripción: NUNCA la dejamos vacía
+            descripcion = (it.get("descripcion") or "").strip()
+            if not descripcion:
+                # Intentar traer descripción desde productos
                 try:
                     cur.execute("SELECT descripcion FROM productos WHERE id=%s", (producto_id,))
                     r = cur.fetchone()
-                    descripcion = row_first_value(r)
+                    if r:
+                        descripcion = (r.get("descripcion") if isinstance(r, dict) else r[0]) or ""
+                        descripcion = (descripcion or "").strip()
                 except Exception:
-                    descripcion = None
+                    descripcion = ""
 
-                if not descripcion:
-                    descripcion = f"COD: {producto_id}"
+            if not descripcion:
+                descripcion = f"COD: {producto_id}"
 
-                # intenta INSERT con precio_final
-                inserted = False
-                try:
-                    cur.execute(
-                        """
-                        INSERT INTO pedido_items (pedido_id, producto_id, descripcion, cantidad, precio_final)
-                        VALUES (%s, %s, %s, %s, %s)
-                        ON CONFLICT (pedido_id, producto_id)
-                        DO UPDATE SET cantidad=EXCLUDED.cantidad,
-                                      precio_final=EXCLUDED.precio_final
-                        """,
-                        (pedido_id, producto_id, descripcion, cantidad, precio_final),
-                    )
-                    inserted = True
-                except Exception:
-                    inserted = False
+            cur.execute(upsert_sql, (pedido_id, producto_id, descripcion, cantidad, precio_final))
 
-                # si no existe precio_final, usa precio_unit
-                if not inserted:
-                    cur.execute(
-                        """
-                        INSERT INTO pedido_items (pedido_id, producto_id, descripcion, cantidad, precio_unit)
-                        VALUES (%s, %s, %s, %s, %s)
-                        ON CONFLICT (pedido_id, producto_id)
-                        DO UPDATE SET cantidad=EXCLUDED.cantidad,
-                                      precio_unit=EXCLUDED.precio_unit
-                        """,
-                        (pedido_id, producto_id, descripcion, cantidad, precio_final),
-                    )
+        # 4) Recalcular total usando la columna real
+        cur.execute(
+            f"SELECT COALESCE(SUM(cantidad * {price_col}), 0) AS total FROM pedido_items WHERE pedido_id=%s",
+            (pedido_id,),
+        )
+        row_total = cur.fetchone()
+        total = float((row_total.get("total") if isinstance(row_total, dict) else row_total[0]) or 0)
 
-        # 3) Recalcular total (primero intenta con precio_final, si falla usa precio_unit)
-        total = 0.0
-        try:
-            cur.execute(
-                """
-                SELECT COALESCE(SUM(cantidad * precio_final), 0) AS total
-                  FROM pedido_items
-                 WHERE pedido_id=%s
-                """,
-                (pedido_id,),
-            )
-            total = float(row_first_value(cur.fetchone()) or 0)
-        except Exception:
-            cur.execute(
-                """
-                SELECT COALESCE(SUM(cantidad * precio_unit), 0) AS total
-                  FROM pedido_items
-                 WHERE pedido_id=%s
-                """,
-                (pedido_id,),
-            )
-            total = float(row_first_value(cur.fetchone()) or 0)
+        # 5) Actualizar total del pedido (siempre existe total; total_final solo si lo creaste)
+        cur.execute("UPDATE pedidos SET total=%s WHERE id=%s", (total, pedido_id))
 
-        # 4) Guardar total en pedidos (si existen columnas)
-        try:
+        # Si tu tabla pedidos tiene total_final, lo actualizamos también (sin romper nada)
+        cur.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='pedidos' AND column_name='total_final'
+        """)
+        if cur.fetchone():
             cur.execute("UPDATE pedidos SET total_final=%s WHERE id=%s", (total, pedido_id))
-        except Exception:
-            pass
-        try:
-            cur.execute("UPDATE pedidos SET total=%s WHERE id=%s", (total, pedido_id))
-        except Exception:
-            pass
 
         conn.commit()
-        return jsonify({"ok": True, "total": total})
+        audit("COTIZACION_GUARDADA", "pedido", pedido_id, {"total": total, "items_count": len(items)})
+        return jsonify({"ok": True, "total": total, "price_col": price_col})
 
     except Exception as e:
         conn.rollback()
-        # Devolvemos el error para depurar (mejor que “error interno” a ciegas)
         return jsonify({"ok": False, "error": str(e)}), 500
     finally:
         try:
@@ -792,6 +735,7 @@ def api_pedido_actualizar_cotizacion(pedido_id):
             conn.close()
         except Exception:
             pass
+
 
 
 
