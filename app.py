@@ -640,35 +640,75 @@ def api_pedido_actualizar_cotizacion(pedido_id):
             if not producto_id:
                 continue
 
+
             # cantidad
+            raw_cant = it.get("cantidad", 0)
             try:
-                cantidad = float(it.get("cantidad") or 0)
+                if isinstance(raw_cant, str):
+                    raw_cant = raw_cant.replace(",", ".").strip()
+                cantidad = float(raw_cant or 0)
             except Exception:
                 cantidad = 0
             if cantidad < 1:
                 cantidad = 1
 
-            # precio final (admin manda precio_unit)
+            # precio final (admin manda precio_unit). Aceptar coma decimal.
             raw_pf = it.get("precio_unit", it.get("precio_final", 0))
             try:
+                if isinstance(raw_pf, str):
+                    raw_pf = raw_pf.replace(",", ".").strip()
                 precio_final = float(raw_pf or 0)
             except Exception:
                 precio_final = 0.0
             if precio_final < 0:
                 precio_final = 0.0
 
+            # Intentar UPDATE; si no existe la fila, hacemos INSERT conservando descripción.
             cur.execute(
                 """
-                INSERT INTO pedido_items (pedido_id, producto_id, cantidad, precio_unit)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (pedido_id, producto_id)
-                DO UPDATE SET
-                    cantidad = EXCLUDED.cantidad,
-                    precio_unit = EXCLUDED.precio_unit
+                UPDATE pedido_items
+                   SET cantidad=%s,
+                       precio_unit=%s
+                 WHERE pedido_id=%s AND producto_id=%s
                 """,
-                (pedido_id, producto_id, cantidad, precio_final),
+                (cantidad, precio_final, pedido_id, producto_id),
             )
+            if getattr(cur, "rowcount", 0) == 0:
+                # Buscar descripción existente (si el pedido ya la tenía) o caer a productos/código
+                descripcion = None
+                try:
+                    cur.execute(
+                        "SELECT descripcion FROM pedido_items WHERE pedido_id=%s AND producto_id=%s",
+                        (pedido_id, producto_id),
+                    )
+                    r = cur.fetchone()
+                    if r:
+                        descripcion = _row_first_value(r, 0)
+                except Exception:
+                    pass
 
+                if not descripcion:
+                    try:
+                        cur.execute("SELECT descripcion FROM productos WHERE id=%s", (producto_id,))
+                        r2 = cur.fetchone()
+                        if r2:
+                            descripcion = _row_first_value(r2, 0)
+                    except Exception:
+                        pass
+
+                if not descripcion:
+                    descripcion = f"COD: {producto_id}"
+
+                cur.execute(
+                    """
+                    INSERT INTO pedido_items (pedido_id, producto_id, descripcion, cantidad, precio_unit)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (pedido_id, producto_id)
+                    DO UPDATE SET cantidad=EXCLUDED.cantidad,
+                                  precio_unit=EXCLUDED.precio_unit
+                    """,
+                    (pedido_id, producto_id, descripcion, cantidad, precio_final),
+                )
 
         # Recalcular total usando precio_unit (que aquí representa el precio final cotizado)
         cur.execute(
