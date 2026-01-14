@@ -670,13 +670,15 @@ def api_pedido_actualizar_cotizacion(pedido_id):
         # Recalcular total usando precio_unit (que aquí representa el precio final cotizado)
         cur.execute(
             """
-            SELECT COALESCE(SUM(cantidad * precio_unit), 0)
+            SELECT COALESCE(SUM(cantidad * precio_unit), 0) AS total
               FROM pedido_items
              WHERE pedido_id=%s
             """,
             (pedido_id,),
         )
-        total = float(cur.fetchone()[0] or 0)
+        row_total = cur.fetchone()
+        total = float(_row_first_value(row_total, 0) or 0)
+
 
         # Guardar totales (para compatibilidad, actualizamos ambos campos si existen)
         try:
