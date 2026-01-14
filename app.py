@@ -206,6 +206,55 @@ create_tables()
 bootstrap_super_admin()
 
 
+def ensure_unique_pedido_items():
+    """
+    Asegura que PostgreSQL tenga el UNIQUE(pedido_id, producto_id) requerido por el UPSERT.
+    También limpia duplicados viejos si los hubiera.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        # 1) Eliminar duplicados (conserva el menor ctid por par pedido_id/producto_id)
+        cur.execute("""
+            DELETE FROM pedido_items a
+            USING pedido_items b
+            WHERE a.ctid < b.ctid
+              AND a.pedido_id = b.pedido_id
+              AND a.producto_id = b.producto_id;
+        """)
+
+        # 2) Crear UNIQUE si no existe
+        cur.execute("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM pg_constraint
+                    WHERE conname = 'pedido_items_pedido_producto_unique'
+                ) THEN
+                    ALTER TABLE pedido_items
+                    ADD CONSTRAINT pedido_items_pedido_producto_unique
+                    UNIQUE (pedido_id, producto_id);
+                END IF;
+            END$$;
+        """)
+
+        conn.commit()
+        print("OK: UNIQUE(pedido_id, producto_id) asegurado en pedido_items")
+    except Exception as e:
+        conn.rollback()
+        print("ERROR ensure_unique_pedido_items:", e)
+        traceback.print_exc()
+    finally:
+        try: cur.close()
+        except: pass
+        try: conn.close()
+        except: pass
+
+ensure_unique_pedido_items()
+
+
+
 
 # ---------------- RUTAS DE PÁGINAS ----------------
 
@@ -611,228 +660,120 @@ def api_pedido_detalle(pedido_id):
 @require_role("SUPER_ADMIN", "ADMIN")
 def api_pedido_actualizar_cotizacion(pedido_id):
     """
-    Guarda la cotización (cantidades y precio final) de forma robusta:
-    - No depende de ON CONFLICT (por si falta el UNIQUE en Render)
-    - Detecta columnas reales de pedido_items y pedidos
-    - Siempre hace rollback ante cualquier error
+    Guarda la cotización (cantidad + precio_final) por item en pedido_items.
+
+    Importante: NO consulta la tabla productos para completar la descripción, porque si la
+    consulta falla deja la transacción en estado aborted y rompe el resto del guardado.
+    Si no viene descripción, se usa un fallback "COD: <producto_id>".
     """
-
-    data = request.get_json(silent=True) or {}
-    items = data.get("items") or []
-
-    if not isinstance(items, list):
-        return jsonify({"ok": False, "error": "items debe ser una lista"}), 400
-
-    conn = get_connection()
-    cur = conn.cursor()
-
+    conn = None
+    cur = None
     try:
-        # Seguridad: ADMIN solo puede tocar pedidos propios
+        conn = get_connection()
+        cur = conn.cursor()
+
         blocked = forbid_if_not_owner(cur, pedido_id)
         if blocked:
-            conn.close()
             return blocked
 
-        # 1) Detectar columnas reales en pedido_items
-        cur.execute("""
-            SELECT column_name
-            FROM information_schema.columns
-            WHERE table_schema='public' AND table_name='pedido_items'
-        """)
-        rows_cols = cur.fetchall()
+        payload = request.get_json(silent=True) or {}
+        items = payload.get("items") or payload.get("cotizacion") or payload.get("detalle") or []
 
-        cols = set()
-        for r in rows_cols:
-            if isinstance(r, dict):
-                cols.add(r.get("column_name"))
-            else:
-                cols.add(r[0])
+        if not isinstance(items, list):
+            return jsonify({"error": "Formato inválido: se esperaba una lista en 'items'"}), 400
 
-        # columnas base
-        has_desc = "descripcion" in cols
-        has_cant = "cantidad" in cols
-        has_precio_unit = "precio_unit" in cols
-        has_precio_final = "precio_final" in cols
-
-        # Elegir columna de precio donde guardar el precio cotizado
-        price_col = "precio_final" if has_precio_final else "precio_unit"
-
-        if not has_cant:
-            raise Exception("La tabla pedido_items no tiene columna 'cantidad' (revisa migración).")
-        if price_col == "precio_unit" and not has_precio_unit:
-            raise Exception("La tabla pedido_items no tiene 'precio_unit' (revisa migración).")
-
-        # 2) Guardar items con UPDATE primero; si no existe, INSERT
+        normalized = []
         for it in items:
-            # producto_id (acepta producto_id o id por compatibilidad)
-            raw_pid = it.get("producto_id", it.get("id"))
             try:
-                producto_id = int(raw_pid)
-            except Exception:
-                continue
+                producto_id = int(it.get("producto_id") or it.get("productoId") or it.get("id") or 0)
+                cantidad = int(it.get("cantidad") or it.get("qty") or 1)
 
-            # cantidad
-            raw_cant = it.get("cantidad", 1)
-            try:
-                if isinstance(raw_cant, str):
-                    raw_cant = raw_cant.replace(",", ".").strip()
-                cantidad = int(float(raw_cant or 1))
-            except Exception:
-                cantidad = 1
-            if cantidad < 1:
-                cantidad = 1
-
-            # precio final (en tu admin normalmente viene como precio_unit = precio final)
-            raw_price = it.get("precio_unit", it.get("precio_final", 0))
-            try:
-                if isinstance(raw_price, str):
-                    raw_price = raw_price.replace(",", ".").strip()
-                precio_final = float(raw_price or 0)
-            except Exception:
-                precio_final = 0.0
-            if precio_final < 0:
-                precio_final = 0.0
-
-            # descripcion (si existe columna)
-            descripcion = (it.get("descripcion") or "").strip()
-            if not descripcion and has_desc:
-                try:
-                    cur.execute("SELECT descripcion FROM productos WHERE id=%s", (producto_id,))
-                    rr = cur.fetchone()
-                    if rr:
-                        if isinstance(rr, dict):
-                            descripcion = (rr.get("descripcion") or "").strip()
-                        else:
-                            descripcion = (rr[0] or "").strip()
-                except Exception:
-                    pass
-            if not descripcion:
-                descripcion = f"COD: {producto_id}"
-
-            # UPDATE
-            if has_desc:
-                cur.execute(
-                    f"""
-                    UPDATE pedido_items
-                    SET cantidad=%s, {price_col}=%s, descripcion=%s
-                    WHERE pedido_id=%s AND producto_id=%s
-                    """,
-                    (cantidad, precio_final, descripcion, pedido_id, producto_id)
-                )
-            else:
-                cur.execute(
-                    f"""
-                    UPDATE pedido_items
-                    SET cantidad=%s, {price_col}=%s
-                    WHERE pedido_id=%s AND producto_id=%s
-                    """,
-                    (cantidad, precio_final, pedido_id, producto_id)
+                precio_final = (
+                    it.get("precio_final")
+                    or it.get("precioFinal")
+                    or it.get("precio")
+                    or it.get("precio_unitario")
+                    or it.get("precio_web")
+                    or it.get("precioWeb")
                 )
 
-            # Si no existía, INSERT
-            if cur.rowcount == 0:
-                if has_desc:
+                if precio_final is None:
+                    return jsonify({"error": "Falta precio_final en un item"}), 400
+
+                precio_final = float(precio_final)
+
+                descripcion = (it.get("descripcion") or it.get("nombre") or "").strip()
+                if not descripcion:
+                    descripcion = f"COD: {producto_id}"
+
+                if producto_id <= 0:
+                    return jsonify({"error": "producto_id inválido"}), 400
+
+                normalized.append((producto_id, cantidad, precio_final, descripcion))
+            except Exception as parse_err:
+                return jsonify({"error": "Item inválido", "detail": str(parse_err), "item": it}), 400
+
+        # Guardado robusto: savepoint por item para no dejar la transacción en aborted a mitad de camino
+        for producto_id, cantidad, precio_final, descripcion in normalized:
+            cur.execute("SAVEPOINT sp_item")
+            try:
+                # Update si existe
+                cur.execute(
+                    """
+                    UPDATE pedido_items
+                    SET cantidad = %s,
+                        precio_final = %s,
+                        descripcion = COALESCE(NULLIF(%s, ''), descripcion)
+                    WHERE pedido_id = %s AND producto_id = %s
+                    """,
+                    (cantidad, precio_final, descripcion, pedido_id, producto_id),
+                )
+
+                # Insert si no existía (idempotente por UNIQUE(pedido_id, producto_id))
+                if cur.rowcount == 0:
                     cur.execute(
-                        f"""
-                        INSERT INTO pedido_items (pedido_id, producto_id, descripcion, cantidad, {price_col})
+                        """
+                        INSERT INTO pedido_items (pedido_id, producto_id, cantidad, precio_final, descripcion)
                         VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (pedido_id, producto_id)
+                        DO UPDATE SET
+                            cantidad = EXCLUDED.cantidad,
+                            precio_final = EXCLUDED.precio_final,
+                            descripcion = COALESCE(NULLIF(EXCLUDED.descripcion, ''), pedido_items.descripcion)
                         """,
-                        (pedido_id, producto_id, descripcion, cantidad, precio_final)
-                    )
-                else:
-                    cur.execute(
-                        f"""
-                        INSERT INTO pedido_items (pedido_id, producto_id, cantidad, {price_col})
-                        VALUES (%s, %s, %s, %s)
-                        """,
-                        (pedido_id, producto_id, cantidad, precio_final)
+                        (pedido_id, producto_id, cantidad, precio_final, descripcion),
                     )
 
-        # 3) Recalcular total desde pedido_items
-        cur.execute(
-            f"""
-            SELECT COALESCE(SUM(cantidad * {price_col}), 0) AS total
-            FROM pedido_items
-            WHERE pedido_id=%s
-            """,
-            (pedido_id,)
-        )
-        rt = cur.fetchone()
-        if isinstance(rt, dict):
-            total = float(rt.get("total") or 0)
-        else:
-            total = float(rt[0] or 0)
-
-        # 4) Actualizar pedidos.total y (si existe) pedidos.total_final
-        cur.execute("UPDATE pedidos SET total=%s WHERE id=%s", (total, pedido_id))
-
-        cur.execute("""
-            SELECT 1
-            FROM information_schema.columns
-            WHERE table_schema='public' AND table_name='pedidos' AND column_name='total_final'
-        """)
-        if cur.fetchone():
-            cur.execute("UPDATE pedidos SET total_final=%s WHERE id=%s", (total, pedido_id))
+                cur.execute("RELEASE SAVEPOINT sp_item")
+            except Exception:
+                # Revierte solo este item, luego relanza para devolver 500 con rollback global
+                cur.execute("ROLLBACK TO SAVEPOINT sp_item")
+                cur.execute("RELEASE SAVEPOINT sp_item")
+                raise
 
         conn.commit()
-        audit("COTIZACION_GUARDADA", "pedido", pedido_id, {"total": total, "items_count": len(items)})
-
-        return jsonify({"ok": True, "total": total, "price_col": price_col})
+        return jsonify({"ok": True, "message": "Cotización guardada"}), 200
 
     except Exception as e:
         try:
-            conn.rollback()
+            if conn:
+                conn.rollback()
         except Exception:
             pass
-        return jsonify({"ok": False, "error": str(e)}), 500
+        app.logger.exception("Error interno al guardar cotización")
+        return jsonify({"error": "Error interno al guardar cotizacion", "detail": str(e)}), 500
 
     finally:
         try:
-            cur.close()
+            if cur:
+                cur.close()
         except Exception:
             pass
         try:
-            conn.close()
+            if conn:
+                conn.close()
         except Exception:
             pass
-
-
-
-
-
-
-def _draw_logo(c, width, height):
-    """Dibuja el logo en el PDF. Prioriza un archivo local en el backend;
-    si no existe, intenta descargarlo desde el frontend (Hostinger).
-    """
-    try:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        local_logo = os.path.join(base_dir, "img", "logos", "logo_empresa.png")
-
-        # coordenadas (ajusta si quieres)
-        x = -30
-        y = height - 70 - 120 + 10
-        w = 280
-        h = 120
-
-        if os.path.exists(local_logo):
-            c.drawImage(local_logo, x, y, width=w, height=h, preserveAspectRatio=True, mask="auto")
-            return
-
-        # Fallback: intentar desde Hostinger (URL pública)
-        url = "https://ferrocentral.com.bo/img/logos/logo_empresa.png"
-        with urllib.request.urlopen(url, timeout=5) as resp:
-            img_bytes = resp.read()
-        img = ImageReader(BytesIO(img_bytes))
-        c.drawImage(img, x, y, width=w, height=h, preserveAspectRatio=True, mask="auto")
-    except Exception:
-        # si falla, simplemente no mostrar logo (sin romper el PDF)
-        return
-
-
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import letter
-from reportlab.lib import colors
 
 
 @app.route("/api/proforma/<int:pedido_id>")
