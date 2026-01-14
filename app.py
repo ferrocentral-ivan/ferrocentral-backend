@@ -641,15 +641,20 @@ def api_pedido_actualizar_cotizacion(pedido_id):
         for it in items:
             producto_id = str(it.get("producto_id", "")).strip()
             if not producto_id:
-                continue
+               continue
+
+            # Descripción (por compatibilidad; si no viene, usamos el código)
+            descripcion = str(
+               it.get("descripcion") or it.get("description") or it.get("desc") or ""
+            ).strip() or producto_id
 
             # cantidad segura
             try:
-                cantidad = int(it.get("cantidad", 1) or 1)
+               cantidad = int(it.get("cantidad", 1) or 1)
             except Exception:
-                cantidad = 1
+               cantidad = 1
             if cantidad < 1:
-                cantidad = 1
+               cantidad = 1
 
             # Aceptar llaves alternativas (admin antiguo mandaba precio_unit)
             raw_pf = it.get("precio_final")
@@ -659,35 +664,35 @@ def api_pedido_actualizar_cotizacion(pedido_id):
                 raw_pf = it.get("precio")
             if raw_pf is None:
                 raw_pf = it.get("precioUnit")
-            if raw_pf is None:
-                raw_pf = 0
 
             try:
                 precio_final = float(raw_pf or 0)
             except Exception:
                 precio_final = 0.0
+
             if precio_final < 0:
                 precio_final = 0.0
 
-            # actualizar item (NO tocar descripcion ni precio_unit base)
+            # ✅ ACTUALIZAR usando precio_unit (no existe precio_final en tu BD)
             cur.execute("""
                 UPDATE pedido_items
                 SET cantidad=%s,
-                    precio_final=%s
+                    precio_unit=%s
                 WHERE pedido_id=%s AND producto_id=%s
             """, (cantidad, precio_final, pedido_id, producto_id))
 
-            # si no existía por algún motivo, lo insertamos (evita error silencioso)
+             # ✅ Si por algún motivo no existía, lo insertamos con descripcion + precio_unit
             if cur.rowcount == 0:
                 cur.execute("""
-                    INSERT INTO pedido_items (pedido_id, producto_id, cantidad, precio_final)
-                    VALUES (%s, %s, %s, %s)
+                    INSERT INTO pedido_items (pedido_id, producto_id, descripcion, cantidad, precio_unit)
+                    VALUES (%s, %s, %s, %s, %s)
                     ON CONFLICT (pedido_id, producto_id) DO UPDATE
                     SET cantidad=EXCLUDED.cantidad,
-                        precio_final=EXCLUDED.precio_final
-                """, (pedido_id, producto_id, cantidad, precio_final))
+                        precio_unit=EXCLUDED.precio_unit
+                """, (pedido_id, producto_id, descripcion, cantidad, precio_final))
 
             total += cantidad * precio_final
+
 
         # Guardar total (opcional)
         cur.execute("UPDATE pedidos SET total=%s WHERE id=%s", (total, pedido_id))
@@ -750,7 +755,7 @@ def generar_factura_pdf(pedido_id):
 
     # Items (también vienen como dict)
     cur.execute("""
-        SELECT descripcion, cantidad, precio_unit, precio_final
+        SELECT descripcion, cantidad, precio_unit, NULL::double precision as precio_final
         FROM pedido_items
         WHERE pedido_id = %s
         ORDER BY producto_id ASC
