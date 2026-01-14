@@ -8,6 +8,11 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from actualizar_precios_openpyxl import actualizar_precios
 from werkzeug.utils import secure_filename
 import traceback
+from psycopg2.extras import RealDictCursor
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
+from reportlab.lib import colors
+
 
 
 
@@ -745,7 +750,7 @@ def generar_factura_pdf(pedido_id):
 
     # Items (también vienen como dict)
     cur.execute("""
-        SELECT descripcion, cantidad, precio_unit
+        SELECT descripcion, cantidad, precio_unit, precio_final
         FROM pedido_items
         WHERE pedido_id = %s
         ORDER BY producto_id ASC
@@ -758,7 +763,9 @@ def generar_factura_pdf(pedido_id):
             "descripcion": (r.get("descripcion") or ""),
             "cantidad": float(r.get("cantidad") or 0),
             "precio_unit": float(r.get("precio_unit") or 0),
+            "precio_final": None if r.get("precio_final") is None else float(r.get("precio_final") or 0),
         })
+
 
     # Marcar como facturado
     cur.execute("UPDATE pedidos SET estado = 'facturado' WHERE id = %s", (pedido_id,))
@@ -855,7 +862,11 @@ def generar_factura_pdf(pedido_id):
         desc = _pdf_text(it["descripcion"])
         cant = it["cantidad"]
         p_base = it["precio_unit"]
-        p_desc = p_base * (1 - e_desc / 100.0)
+        if it.get("precio_final") is not None:
+            p_desc = float(it["precio_final"] or 0)
+        else:
+            p_desc = p_base * (1 - e_desc / 100.0)
+
         sub = cant * p_desc
         total_desc += sub
 
