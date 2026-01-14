@@ -659,13 +659,16 @@ def api_pedido_actualizar_cotizacion(pedido_id):
 
             cur.execute(
                 """
-                UPDATE pedido_items
-                   SET cantidad=%s,
-                       precio_unit=%s
-                 WHERE pedido_id=%s AND producto_id=%s
+                INSERT INTO pedido_items (pedido_id, producto_id, cantidad, precio_unit)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (pedido_id, producto_id)
+                DO UPDATE SET
+                    cantidad = EXCLUDED.cantidad,
+                    precio_unit = EXCLUDED.precio_unit
                 """,
-                (cantidad, precio_final, pedido_id, producto_id),
+                (pedido_id, producto_id, cantidad, precio_final),
             )
+
 
         # Recalcular total usando precio_unit (que aquí representa el precio final cotizado)
         cur.execute(
