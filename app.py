@@ -885,7 +885,7 @@ def proforma_pdf(pedido_id):
         c.drawImage(
             img_source,
             25,                 # X: izquierda
-            height - (header_h + 135),
+            height - (header_h + 155),
             width=185,          # ajusta SOLO tamaño si quieres
             height=130,          # ajusta SOLO tamaño si quieres
             preserveAspectRatio=True,
@@ -906,7 +906,7 @@ def proforma_pdf(pedido_id):
 
 
     # Datos empresa
-    y = height - (header_h + 55)
+    y = height - (header_h + 35)
     c.setFillColor(colors.black)
     c.setFont("Helvetica-Bold", 12)
     c.drawCentredString(width / 2, y, "Distribuidora FerroCentral")
@@ -919,7 +919,7 @@ def proforma_pdf(pedido_id):
     c.drawCentredString(width / 2, y, "Tel.Fijo: 4792110 - WhatsApp: 76920918")
 
     # Datos cliente
-    y -= 25
+    y -= 35
     c.setFont("Helvetica-Bold", 11)
     c.drawString(60, y, "Datos del cliente")
     y -= 15
