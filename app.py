@@ -1698,33 +1698,80 @@ def api_admin_stats():
             return next(iter(row.values()))
         return row[0]
 
-    # Total empresas
-    cur.execute("SELECT COUNT(*) AS empresas FROM empresas")
-    empresas = one_value(0)
+    role = session.get("role")
+    admin_id = session.get("admin_id")
 
-    # Pedidos hoy
-    cur.execute("""
-        SELECT COUNT(*) AS pedidos_hoy
-        FROM pedidos
-        WHERE DATE(fecha) = CURRENT_DATE
-    """)
-    pedidos_hoy = one_value(0)
+    # =========================
+    # SUPER ADMIN → ve TODO
+    # =========================
+    if role == "SUPER_ADMIN":
+        # Total empresas (global)
+        cur.execute("SELECT COUNT(*) AS empresas FROM empresas")
+        empresas = one_value(0)
 
-    # Pendientes
-    cur.execute("""
-        SELECT COUNT(*) AS pendientes
-        FROM pedidos
-        WHERE estado = 'pendiente'
-    """)
-    pendientes = one_value(0)
+        # Pedidos hoy (global)
+        cur.execute("""
+            SELECT COUNT(*) AS pedidos_hoy
+            FROM pedidos
+            WHERE DATE(fecha) = CURRENT_DATE
+        """)
+        pedidos_hoy = one_value(0)
 
-    # Total vendido hoy
-    cur.execute("""
-        SELECT COALESCE(SUM(total), 0) AS total_hoy
-        FROM pedidos
-        WHERE DATE(fecha) = CURRENT_DATE
-    """)
-    total_hoy = one_value(0)
+        # Pendientes (global)
+        cur.execute("""
+            SELECT COUNT(*) AS pendientes
+            FROM pedidos
+            WHERE estado = 'pendiente'
+        """)
+        pendientes = one_value(0)
+
+        # Total vendido hoy (global)
+        cur.execute("""
+            SELECT COALESCE(SUM(total), 0) AS total_hoy
+            FROM pedidos
+            WHERE DATE(fecha) = CURRENT_DATE
+        """)
+        total_hoy = one_value(0)
+
+    # =========================
+    # ADMIN → SOLO LO SUYO
+    # (usando pedidos.admin_id)
+    # =========================
+    else:
+        # Total empresas del admin
+        cur.execute("""
+            SELECT COUNT(*) AS empresas
+            FROM empresas
+            WHERE admin_id = %s
+        """, (admin_id,))
+        empresas = one_value(0)
+
+        # Pedidos hoy del admin
+        cur.execute("""
+            SELECT COUNT(*) AS pedidos_hoy
+            FROM pedidos
+            WHERE admin_id = %s
+              AND DATE(fecha) = CURRENT_DATE
+        """, (admin_id,))
+        pedidos_hoy = one_value(0)
+
+        # Pendientes del admin
+        cur.execute("""
+            SELECT COUNT(*) AS pendientes
+            FROM pedidos
+            WHERE admin_id = %s
+              AND estado = 'pendiente'
+        """, (admin_id,))
+        pendientes = one_value(0)
+
+        # Total vendido hoy del admin
+        cur.execute("""
+            SELECT COALESCE(SUM(total), 0) AS total_hoy
+            FROM pedidos
+            WHERE admin_id = %s
+              AND DATE(fecha) = CURRENT_DATE
+        """, (admin_id,))
+        total_hoy = one_value(0)
 
     conn.close()
 
@@ -1737,6 +1784,7 @@ def api_admin_stats():
             "total_hoy": float(total_hoy or 0),
         }
     })
+
 
 
 
