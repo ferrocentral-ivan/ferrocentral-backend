@@ -2,6 +2,7 @@ from flask import Flask, send_from_directory, request, jsonify, session, send_fi
 from flask_cors import CORS
 import os, json, hashlib, secrets
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from io import BytesIO
 from psycopg2.extras import RealDictCursor
 from reportlab.pdfgen import canvas
@@ -44,6 +45,47 @@ def append_pedido_json(pedido_obj: dict):
 BASE_URL = "https://ferrocentral.com.bo"  # en local puedes usar "http://127.0.0.1:5000"
 
 app = Flask(__name__, static_folder='.', static_url_path='')
+
+# Zona horaria Bolivia (Render suele correr en UTC)
+LA_PAZ_TZ = ZoneInfo("America/La_Paz")
+
+def now_lp():
+    """Datetime local Bolivia (America/La_Paz)."""
+    return datetime.now(LA_PAZ_TZ)
+
+def fmt_fecha_lp(value, with_seconds: bool = False):
+    """Formatea fecha/hora en Bolivia. Soporta datetime o string ISO."""
+    if value is None:
+        return ""
+    dt = None
+
+    # datetime
+    if hasattr(value, "astimezone"):
+        dt = value
+
+    # string ISO / postgres
+    if dt is None and isinstance(value, str):
+        s = value.strip().replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(s)
+        except Exception:
+            dt = None
+
+    if dt is None:
+        return str(value)
+
+    # si viene sin tzinfo, asumimos UTC
+    try:
+        if dt.tzinfo is None:
+            from datetime import timezone
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.astimezone(LA_PAZ_TZ)
+    except Exception:
+        pass
+
+    fmt = "%Y-%m-%d %H:%M:%S" if with_seconds else "%Y-%m-%d %H:%M"
+    return dt.strftime(fmt)
+
 
 # ==== COOKIES / SESSION (PROD) ====
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY")  # Render ENV
@@ -437,7 +479,7 @@ def api_pedido():
 
 
     import datetime
-    fecha = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    fecha = now_lp().strftime("%Y-%m-%d %H:%M:%S")
 
     conn = get_connection()
     cur = conn.cursor()
@@ -611,12 +653,20 @@ def api_pedido_detalle(pedido_id):
         conn.close()
         return jsonify({"ok": False, "error": "Pedido no encontrado"}), 404
 
-    # Items del pedido
-    cur.execute("""
-        SELECT producto_id, descripcion, cantidad, precio_unit
-        FROM pedido_items
-        WHERE pedido_id = %s
-    """, (pedido_id,))
+    # Items del pedido (incluye precio_final si existe)
+    try:
+        cur.execute("""
+            SELECT producto_id, descripcion, cantidad, precio_unit, precio_final
+            FROM pedido_items
+            WHERE pedido_id = %s
+        """, (pedido_id,))
+    except Exception:
+        conn.rollback()
+        cur.execute("""
+            SELECT producto_id, descripcion, cantidad, precio_unit
+            FROM pedido_items
+            WHERE pedido_id = %s
+        """, (pedido_id,))
     items = cur.fetchall()
     conn.close()
 
@@ -689,23 +739,62 @@ def api_pedido_actualizar_cotizacion(pedido_id):
             # redondeo consistente
             precio_final = round(precio_final + 1e-9, 2)
 
-            # actualizar item (precio_unit = PRECIO FINAL)
-            cur.execute("""
-                UPDATE pedido_items
-                SET cantidad=%s,
-                    precio_unit=%s
-                WHERE pedido_id=%s AND producto_id=%s
-            """, (cantidad, precio_final, pedido_id, producto_id))
-
-            # si no existía, lo insertamos (sin descripcion para no pisar datos)
-            if cur.rowcount == 0:
+            # Actualizar cotización:
+            # - NO tocar precio_unit (precio web/base)
+            # - Guardar el valor editable en precio_final
+            try:
                 cur.execute("""
-                    INSERT INTO pedido_items (pedido_id, producto_id, cantidad, precio_unit)
-                    VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (pedido_id, producto_id) DO UPDATE
-                    SET cantidad=EXCLUDED.cantidad,
-                        precio_unit=EXCLUDED.precio_unit
-                """, (pedido_id, producto_id, cantidad, precio_final))
+                    UPDATE pedido_items
+                    SET cantidad=%s,
+                        precio_final=%s
+                    WHERE pedido_id=%s AND producto_id=%s
+                """, (cantidad, precio_final, pedido_id, producto_id))
+                precio_final_col_ok = True
+            except Exception:
+                # Compatibilidad si la columna precio_final no existe
+                conn.rollback()
+                cur.execute("""
+                    UPDATE pedido_items
+                    SET cantidad=%s,
+                        precio_unit=%s
+                    WHERE pedido_id=%s AND producto_id=%s
+                """, (cantidad, precio_final, pedido_id, producto_id))
+                precio_final_col_ok = False
+
+            # si no existía, lo insertamos
+            if cur.rowcount == 0:
+                raw_base = it.get("precio_base")
+                if raw_base is None:
+                    raw_base = it.get("precio_web")
+                if raw_base is None:
+                    raw_base = it.get("precio_unit_base")
+                precio_base = None
+                try:
+                    precio_base = float(raw_base) if raw_base is not None else None
+                except Exception:
+                    precio_base = None
+
+                if precio_base is None:
+                    # fallback: usamos el mismo valor para no dejar 0
+                    precio_base = precio_final
+
+                if precio_final_col_ok:
+                    cur.execute("""
+                        INSERT INTO pedido_items (pedido_id, producto_id, cantidad, precio_unit, precio_final)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (pedido_id, producto_id) DO UPDATE
+                        SET cantidad=EXCLUDED.cantidad,
+                            precio_unit=EXCLUDED.precio_unit,
+                            precio_final=EXCLUDED.precio_final
+                    """, (pedido_id, producto_id, cantidad, precio_base, precio_final))
+                else:
+                    cur.execute("""
+                        INSERT INTO pedido_items (pedido_id, producto_id, cantidad, precio_unit)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (pedido_id, producto_id) DO UPDATE
+                        SET cantidad=EXCLUDED.cantidad,
+                            precio_unit=EXCLUDED.precio_unit
+                    """, (pedido_id, producto_id, cantidad, precio_final))
 
             total += cantidad * precio_final
 
@@ -1009,10 +1098,7 @@ def reporte_facturados():
         nit = r.get("nit") or ""
 
     # fecha puede venir como datetime o string
-        if hasattr(fecha, "strftime"):
-            fecha_str = fecha.strftime("%Y-%m-%d %H:%M")
-        else:
-            fecha_str = str(fecha)
+        fecha_str = fmt_fecha_lp(fecha)
 
         if y < 60:
             c.showPage()
