@@ -853,11 +853,12 @@ def proforma_pdf(pedido_id):
     c.line(60, y, width - 60, y)
     y -= 14
 
-    c.drawRightString(width - 270, y, "Cant.")
-    c.drawRightString(width - 200, y, "P. Base")
-    c.drawRightString(width - 135, y, "P. c/desc")
-    c.drawRightString(width - 50, y, "Subtotal")
-
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(60, y, "Descripción")
+    c.drawRightString(380, y, "Cant.")
+    c.drawRightString(455, y, "P. Base")
+    c.drawRightString(525, y, "P. c/desc")
+    c.drawRightString(width - 60, y, "Subtotal")
     y -= 10
     c.setLineWidth(0.5)
     c.line(60, y, width - 60, y)
@@ -879,11 +880,10 @@ def proforma_pdf(pedido_id):
             desc = desc[:68] + "..."
 
         c.drawString(60, y, desc)
-        c.drawRightString(width - 270, y, f"{cant:g}")
-        c.drawRightString(width - 200, y, f"{p_base:.2f}")
-        c.drawRightString(width - 135, y, f"{p_desc:.2f}")
-        c.drawRightString(width - 50, y, f"{subtotal:.2f}")
-
+        c.drawRightString(380, y, f"{cant:g}")
+        c.drawRightString(455, y, f"{p_base:.2f}")
+        c.drawRightString(525, y, f"{p_desc:.2f}")
+        c.drawRightString(width - 60, y, f"{sub:.2f}")
         y -= 12
 
         if y < 100:
