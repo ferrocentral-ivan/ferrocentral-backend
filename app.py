@@ -2,17 +2,17 @@ from flask import Flask, send_from_directory, request, jsonify, session, send_fi
 from flask_cors import CORS
 import os, json, hashlib, secrets
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 from io import BytesIO
-from psycopg2.extras import RealDictCursor
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import letter
-from reportlab.lib import colors
 from backend.database import get_connection, create_tables
 from werkzeug.security import generate_password_hash, check_password_hash
 from actualizar_precios_openpyxl import actualizar_precios
 from werkzeug.utils import secure_filename
 import traceback
+from psycopg2.extras import RealDictCursor
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
+from reportlab.lib import colors
+
 
 
 
@@ -45,47 +45,6 @@ def append_pedido_json(pedido_obj: dict):
 BASE_URL = "https://ferrocentral.com.bo"  # en local puedes usar "http://127.0.0.1:5000"
 
 app = Flask(__name__, static_folder='.', static_url_path='')
-
-# Zona horaria Bolivia (Render suele correr en UTC)
-LA_PAZ_TZ = ZoneInfo("America/La_Paz")
-
-def now_lp():
-    """Datetime local Bolivia (America/La_Paz)."""
-    return datetime.now(LA_PAZ_TZ)
-
-def fmt_fecha_lp(value, with_seconds: bool = False):
-    """Formatea fecha/hora en Bolivia. Soporta datetime o string ISO."""
-    if value is None:
-        return ""
-    dt = None
-
-    # datetime
-    if hasattr(value, "astimezone"):
-        dt = value
-
-    # string ISO / postgres
-    if dt is None and isinstance(value, str):
-        s = value.strip().replace("Z", "+00:00")
-        try:
-            dt = datetime.fromisoformat(s)
-        except Exception:
-            dt = None
-
-    if dt is None:
-        return str(value)
-
-    # si viene sin tzinfo, asumimos UTC
-    try:
-        if dt.tzinfo is None:
-            from datetime import timezone
-            dt = dt.replace(tzinfo=timezone.utc)
-        dt = dt.astimezone(LA_PAZ_TZ)
-    except Exception:
-        pass
-
-    fmt = "%Y-%m-%d %H:%M:%S" if with_seconds else "%Y-%m-%d %H:%M"
-    return dt.strftime(fmt)
-
 
 # ==== COOKIES / SESSION (PROD) ====
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY")  # Render ENV
@@ -479,7 +438,7 @@ def api_pedido():
 
 
     import datetime
-    fecha = now_lp().strftime("%Y-%m-%d %H:%M:%S")
+    fecha = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     conn = get_connection()
     cur = conn.cursor()
@@ -501,58 +460,18 @@ RETURNING id
 
     pedido_id = cur.fetchone()["id"]  # ID del nuevo pedido
 
-    # Obtener descuento de la empresa (porcentaje)
-    cur.execute("SELECT COALESCE(descuento, 0) AS descuento FROM empresas WHERE id = %s", (empresa_id,))
-    row_desc = cur.fetchone()
-    descuento_pct = float(row_desc["descuento"] or 0)
-
-    # Guardar items:
-    # - precio_unit = PRECIO WEB/BASE
-    # - precio_final = PRECIO CON DESCUENTO (si existe la columna)
-    total_final = 0.0
+    # Guardar items
     for item in items:
-        cantidad = float(item.get("cantidad") or 0)
-
-        # precio web/base que viene del carrito
-        precio_base = float(item.get("precio_unit") or 0)
-
-        # precio con descuento empresa
-        precio_final = precio_base * (1 - descuento_pct / 100.0)
-        precio_final = round(precio_final + 1e-9, 2)
-
-        total_final += precio_final * cantidad
-
-        # Intentar guardar con precio_final (nuevo esquema)
-        try:
-            cur.execute("""
-                INSERT INTO pedido_items (pedido_id, producto_id, descripcion, cantidad, precio_unit, precio_final)
-                VALUES (%s, %s, %s, %s, %s, %s)
-            """, (
-                pedido_id,
-                item.get("id"),
-                item.get("descripcion", ""),
-                cantidad,
-                precio_base,
-                precio_final
-            ))
-        except Exception:
-            # Si la columna precio_final no existe, fallback legacy (guarda solo final en precio_unit)
-            conn.rollback()
-            cur.execute("""
-                INSERT INTO pedido_items (pedido_id, producto_id, descripcion, cantidad, precio_unit)
-                VALUES (%s, %s, %s, %s, %s)
-            """, (
-                pedido_id,
-                item.get("id"),
-                item.get("descripcion", ""),
-                cantidad,
-                precio_final
-            ))
-
-
-    # Recalcular total del pedido desde backend (evita diferencias front/back)
-    total_final = round(total_final + 1e-9, 2)
-    cur.execute("UPDATE pedidos SET total = %s WHERE id = %s", (total_final, pedido_id))
+        cur.execute("""
+            INSERT INTO pedido_items (pedido_id, producto_id, descripcion, cantidad, precio_unit)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (
+            pedido_id,
+            item["id"],
+            item["descripcion"],
+            item["cantidad"],
+            item["precio_unit"]
+        ))
 
     conn.commit()
     audit("PEDIDO_CREADO", "pedido", pedido_id, {
@@ -675,20 +594,12 @@ def api_pedido_detalle(pedido_id):
         conn.close()
         return jsonify({"ok": False, "error": "Pedido no encontrado"}), 404
 
-    # Items del pedido (incluye precio_final si existe)
-    try:
-        cur.execute("""
-            SELECT producto_id, descripcion, cantidad, precio_unit, precio_final
-            FROM pedido_items
-            WHERE pedido_id = %s
-        """, (pedido_id,))
-    except Exception:
-        conn.rollback()
-        cur.execute("""
-            SELECT producto_id, descripcion, cantidad, precio_unit
-            FROM pedido_items
-            WHERE pedido_id = %s
-        """, (pedido_id,))
+    # Items del pedido
+    cur.execute("""
+        SELECT producto_id, descripcion, cantidad, precio_unit
+        FROM pedido_items
+        WHERE pedido_id = %s
+    """, (pedido_id,))
     items = cur.fetchall()
     conn.close()
 
@@ -702,8 +613,8 @@ def api_pedido_detalle(pedido_id):
 @require_role("SUPER_ADMIN", "ADMIN")
 def api_pedido_actualizar_cotizacion(pedido_id):
     """
-    Guarda/actualiza la cotización (cantidades y PRECIO FINAL).
-    En este sistema, pedido_items.precio_unit se usa como PRECIO FINAL editable.
+    Guarda/actualiza la cotización (cantidades y precio_final) sin duplicar items.
+    Acepta payloads antiguos y nuevos desde admin.html.
     """
     data = request.get_json(silent=True) or {}
     items = data.get("items") or []
@@ -713,7 +624,7 @@ def api_pedido_actualizar_cotizacion(pedido_id):
 
     conn = get_connection()
     try:
-        cur = conn.cursor()  # <-- NO RealDictCursor aquí
+        cur = conn.cursor(cursor_factory=RealDictCursor)
 
         blocked = forbid_if_not_owner(cur, pedido_id)
         if blocked:
@@ -730,17 +641,22 @@ def api_pedido_actualizar_cotizacion(pedido_id):
         for it in items:
             producto_id = str(it.get("producto_id", "")).strip()
             if not producto_id:
-                continue
+               continue
+
+            # Descripción (por compatibilidad; si no viene, usamos el código)
+            descripcion = str(
+               it.get("descripcion") or it.get("description") or it.get("desc") or ""
+            ).strip() or producto_id
 
             # cantidad segura
             try:
-                cantidad = int(it.get("cantidad", 1) or 1)
+               cantidad = int(it.get("cantidad", 1) or 1)
             except Exception:
-                cantidad = 1
+               cantidad = 1
             if cantidad < 1:
-                cantidad = 1
+               cantidad = 1
 
-            # precio final (acepta varias llaves)
+            # Aceptar llaves alternativas (admin antiguo mandaba precio_unit)
             raw_pf = it.get("precio_final")
             if raw_pf is None:
                 raw_pf = it.get("precio_unit")
@@ -748,82 +664,40 @@ def api_pedido_actualizar_cotizacion(pedido_id):
                 raw_pf = it.get("precio")
             if raw_pf is None:
                 raw_pf = it.get("precioUnit")
-            if raw_pf is None:
-                raw_pf = 0
 
             try:
                 precio_final = float(raw_pf or 0)
             except Exception:
                 precio_final = 0.0
+
             if precio_final < 0:
                 precio_final = 0.0
 
-            # redondeo consistente
-            precio_final = round(precio_final + 1e-9, 2)
+            # ✅ ACTUALIZAR usando precio_unit (no existe precio_final en tu BD)
+            cur.execute("""
+                UPDATE pedido_items
+                SET cantidad=%s,
+                    precio_unit=%s
+                WHERE pedido_id=%s AND producto_id=%s
+            """, (cantidad, precio_final, pedido_id, producto_id))
 
-            # Actualizar cotización:
-            # - NO tocar precio_unit (precio web/base)
-            # - Guardar el valor editable en precio_final
-            try:
-                cur.execute("""
-                    UPDATE pedido_items
-                    SET cantidad=%s,
-                        precio_final=%s
-                    WHERE pedido_id=%s AND producto_id=%s
-                """, (cantidad, precio_final, pedido_id, producto_id))
-                precio_final_col_ok = True
-            except Exception:
-                # Compatibilidad si la columna precio_final no existe
-                conn.rollback()
-                cur.execute("""
-                    UPDATE pedido_items
-                    SET cantidad=%s,
-                        precio_unit=%s
-                    WHERE pedido_id=%s AND producto_id=%s
-                """, (cantidad, precio_final, pedido_id, producto_id))
-                precio_final_col_ok = False
-
-            # si no existía, lo insertamos
+             # ✅ Si por algún motivo no existía, lo insertamos con descripcion + precio_unit
             if cur.rowcount == 0:
-                raw_base = it.get("precio_base")
-                if raw_base is None:
-                    raw_base = it.get("precio_web")
-                if raw_base is None:
-                    raw_base = it.get("precio_unit_base")
-                precio_base = None
-                try:
-                    precio_base = float(raw_base) if raw_base is not None else None
-                except Exception:
-                    precio_base = None
-
-                if precio_base is None:
-                    # fallback: usamos el mismo valor para no dejar 0
-                    precio_base = precio_final
-
-                if precio_final_col_ok:
-                    cur.execute("""
-                        INSERT INTO pedido_items (pedido_id, producto_id, cantidad, precio_unit, precio_final)
-                        VALUES (%s, %s, %s, %s, %s)
-                        ON CONFLICT (pedido_id, producto_id) DO UPDATE
-                        SET cantidad=EXCLUDED.cantidad,
-                            precio_unit=EXCLUDED.precio_unit,
-                            precio_final=EXCLUDED.precio_final
-                    """, (pedido_id, producto_id, cantidad, precio_base, precio_final))
-                else:
-                    cur.execute("""
-                        INSERT INTO pedido_items (pedido_id, producto_id, cantidad, precio_unit)
-                        VALUES (%s, %s, %s, %s)
-                        ON CONFLICT (pedido_id, producto_id) DO UPDATE
-                        SET cantidad=EXCLUDED.cantidad,
-                            precio_unit=EXCLUDED.precio_unit
-                    """, (pedido_id, producto_id, cantidad, precio_final))
+                cur.execute("""
+                    INSERT INTO pedido_items (pedido_id, producto_id, descripcion, cantidad, precio_unit)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (pedido_id, producto_id) DO UPDATE
+                    SET cantidad=EXCLUDED.cantidad,
+                        precio_unit=EXCLUDED.precio_unit
+                """, (pedido_id, producto_id, descripcion, cantidad, precio_final))
 
             total += cantidad * precio_final
 
-        total = round(total + 1e-9, 2)
-        cur.execute("UPDATE pedidos SET total=%s WHERE id=%s", (total, pedido_id))
 
+        # Guardar total (opcional)
+        cur.execute("UPDATE pedidos SET total=%s WHERE id=%s", (total, pedido_id))
         conn.commit()
+
         return jsonify({"ok": True, "total": total})
 
     except Exception as e:
@@ -840,24 +714,11 @@ def api_pedido_actualizar_cotizacion(pedido_id):
             pass
 
 
-
-@app.route("/api/proforma/<int:pedido_id>")
-@require_role("SUPER_ADMIN", "ADMIN")
-def proforma(pedido_id):
-    """Genera PDF de proforma SIN cambiar estado."""
-    return _generar_pdf_pedido(pedido_id, marcar_facturado=False)
-
-
 @app.route("/api/facturar/<int:pedido_id>")
 @require_role("SUPER_ADMIN", "ADMIN")
-def facturar(pedido_id):
-    """Genera PDF y marca el pedido como facturado (y lo registra en libro de ventas)."""
-    return _generar_pdf_pedido(pedido_id, marcar_facturado=True)
-
-
-def _generar_pdf_pedido(pedido_id: int, marcar_facturado: bool):
+def generar_factura_pdf(pedido_id):
     conn = get_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur = conn.cursor()
 
     blocked = forbid_if_not_owner(cur, pedido_id)
     if blocked:
@@ -865,7 +726,7 @@ def _generar_pdf_pedido(pedido_id: int, marcar_facturado: bool):
         return blocked
 
     cur.execute("""
-        SELECT p.id, p.fecha, p.estado, p.notas,
+        SELECT p.id, p.fecha, p.total, p.estado, p.notas,
                e.razon_social, e.nit, e.contacto, e.telefono, e.correo,
                COALESCE(e.descuento, 0) AS descuento
         FROM pedidos p
@@ -873,9 +734,16 @@ def _generar_pdf_pedido(pedido_id: int, marcar_facturado: bool):
         WHERE p.id = %s
     """, (pedido_id,))
     row = cur.fetchone()
+
     if not row:
         conn.close()
-        return jsonify({"error": "Pedido no encontrado"}), 404
+        return jsonify({"ok": False, "error": "Pedido no encontrado"}), 404
+
+    p_id     = row["id"]
+    p_fecha  = row.get("fecha") or ""
+    p_total  = float(row.get("total") or 0)
+    p_estado = row.get("estado") or ""
+    p_notas  = row.get("notas") or ""
 
     e_razon    = row.get("razon_social") or ""
     e_nit      = row.get("nit") or ""
@@ -883,29 +751,16 @@ def _generar_pdf_pedido(pedido_id: int, marcar_facturado: bool):
     e_tel      = row.get("telefono") or ""
     e_correo   = row.get("correo") or ""
     e_desc     = float(row.get("descuento") or 0)
-    p_fecha    = row.get("fecha")
-    p_notas    = row.get("notas") or ""
 
-    # Items (si existe precio_final lo usamos; si no existe, caemos a precio_unit)
-    try:
-        cur.execute("""
-            SELECT descripcion, cantidad, precio_unit, precio_final
-            FROM pedido_items
-            WHERE pedido_id = %s
-            ORDER BY producto_id ASC
-        """, (pedido_id,))
-        items_db = cur.fetchall()
-        has_precio_final = True
-    except Exception:
-        conn.rollback()
-        cur.execute("""
-            SELECT descripcion, cantidad, precio_unit
-            FROM pedido_items
-            WHERE pedido_id = %s
-            ORDER BY producto_id ASC
-        """, (pedido_id,))
-        items_db = cur.fetchall()
-        has_precio_final = False
+
+    # Items (también vienen como dict)
+    cur.execute("""
+        SELECT descripcion, cantidad, precio_unit, NULL::double precision as precio_final
+        FROM pedido_items
+        WHERE pedido_id = %s
+        ORDER BY producto_id ASC
+    """, (pedido_id,))
+    items_db = cur.fetchall()
 
     items = []
     for r in items_db:
@@ -913,31 +768,17 @@ def _generar_pdf_pedido(pedido_id: int, marcar_facturado: bool):
             "descripcion": (r.get("descripcion") or ""),
             "cantidad": float(r.get("cantidad") or 0),
             "precio_unit": float(r.get("precio_unit") or 0),
-            "precio_final": float(r.get("precio_final") or 0) if (has_precio_final and r.get("precio_final") is not None) else None
+            "precio_final": None if r.get("precio_final") is None else float(r.get("precio_final") or 0),
         })
 
-    # Totales consistentes
-    factor = 1.0 - (e_desc / 100.0)
-    if factor <= 0:
-        factor = 1.0
 
-    total_base = 0.0
-    total_desc = 0.0
-    for it in items:
-        cant = float(it["cantidad"] or 0)
-        p_base = float(it["precio_unit"] or 0)
-        # Si hay precio_final guardado (cotización editada), manda; si no, calcula descuento empresa
-        if it["precio_final"] is not None:
-            p_desc = float(it["precio_final"] or 0)
-        else:
-            p_desc = round(p_base * factor, 2)
-        total_base += p_base * cant
-        total_desc += p_desc * cant
+    # Marcar como facturado
+    cur.execute("UPDATE pedidos SET estado = 'facturado' WHERE id = %s", (pedido_id,))
+    conn.commit()
+    audit("PEDIDO_FACTURADO", "pedido", pedido_id, {"total": float(p_total or 0)})
+    conn.close()
 
-    total_base = round(total_base, 2)
-    total_desc = round(total_desc, 2)
-
-    # Generar PDF en memoria
+    # Generar PDF en memoria (más seguro que guardar archivo en Render)
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=letter)
     width, height = letter
@@ -948,6 +789,7 @@ def _generar_pdf_pedido(pedido_id: int, marcar_facturado: bool):
         s = str(s)
         return s.encode("cp1252", errors="replace").decode("cp1252")
 
+
     # Franja roja
     c.setFillColorRGB(0.88, 0.22, 0.22)
     c.rect(0, height - 80, width, 80, fill=1, stroke=0)
@@ -957,105 +799,110 @@ def _generar_pdf_pedido(pedido_id: int, marcar_facturado: bool):
     c.drawCentredString(width / 2, height - 50, "FACTURA PROFORMA")
 
     c.setFont("Helvetica-Bold", 12)
-    c.drawRightString(width - 50, height - 55, f"N° {pedido_id}")
+    c.drawRightString(width - 40, height - 30, f"Nº {pedido_id}")
+
+    # Logo (si existe)
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    logo_path = os.path.join(base_dir, "img", "logos", "logo_empresa.png")
+    if os.path.exists(logo_path):
+        try:
+            c.drawImage(
+                logo_path,
+                -30,
+                height - 70 - 120 + 10,
+                width=280,
+                height=120,
+                preserveAspectRatio=True,
+                mask="auto",
+            )
+        except Exception as e:
+            print("⚠️ ERROR dibujando logo:", e)
 
     # Datos empresa
-    y = height - 120
     c.setFillColor(colors.black)
-    c.setFont("Helvetica-Bold", 12)
-    c.drawCentredString(width / 2, y, "Distribuidora FerroCentral")
-    y -= 15
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(170, height - 110, "Distribuidora FerroCentral")
     c.setFont("Helvetica", 10)
-    c.drawCentredString(width / 2, y, "NIT: 454443545")
-    y -= 12
-    c.drawCentredString(width / 2, y, "Of: Calle David Avestegui #555 Queru Queru Central")
-    y -= 12
-    c.drawCentredString(width / 2, y, "Tel.Fijo: 4792110 - WhatsApp: 76920918")
+    c.drawString(170, height - 125, "NIT: 454443545")
+    c.drawString(170, height - 140, "Of: Calle David Avestegui #555 Queru Queru Central")
+    c.drawString(170, height - 155, "Tel.Fijo: 4792110 - WhatsApp: 76920918")
 
     # Datos cliente
-    y -= 35
+    y = height - 190
     c.setFont("Helvetica-Bold", 11)
-    c.drawString(60, y, "Datos del cliente")
+    c.drawString(40, y, "Datos del cliente")
     y -= 15
     c.setFont("Helvetica", 10)
+    c.drawString(40, y, _pdf_text(f"Razón social: {e_razon}"))
+    y -= 12
+    c.drawString(40, y, _pdf_text(f"NIT: {e_nit}"))
+    y -= 12
+    c.drawString(40, y, _pdf_text(f"Contacto: {e_contacto}"))
+    y -= 12
+    c.drawString(40, y, _pdf_text(f"Teléfono: {e_tel}"))
+    y -= 12
+    c.drawString(40, y, _pdf_text(f"Correo: {e_correo}"))
+    y -= 12
+    c.drawString(40, y, f"Descuento aplicado: {e_desc:.2f}%")
 
-    c.drawString(60, y, f"Razón social: {_pdf_text(e_razon)}"); y -= 12
-    c.drawString(60, y, f"NIT: {_pdf_text(e_nit)}"); y -= 12
-    c.drawString(60, y, f"Contacto: {_pdf_text(e_contacto)}"); y -= 12
-    c.drawString(60, y, f"Teléfono: {_pdf_text(e_tel)}"); y -= 12
-    c.drawString(60, y, f"Correo: {_pdf_text(e_correo)}"); y -= 12
-    c.drawString(60, y, f"Descuento aplicado: {e_desc:.2f}%"); y -= 12
+    y -= 10
+    c.line(40, y, width - 40, y)
+    y -= 20
 
-    if p_notas:
-        c.drawString(60, y, f"Notas: {_pdf_text(p_notas)}"); y -= 12
-
-    # Línea separadora
-    y -= 8
-    c.line(60, y, width - 60, y)
-    y -= 18
-
-    # Encabezados tabla
+    # Tabla
     c.setFont("Helvetica-Bold", 10)
-    c.drawString(60, y, "Descripción")
-    c.drawRightString(width - 260, y, "Cant.")
-    c.drawRightString(width - 190, y, "P. Base")
-    c.drawRightString(width - 120, y, "P. c/desc")
-    c.drawRightString(width - 60, y, "Subtotal")
-    y -= 8
-    c.line(60, y, width - 60, y)
-    y -= 14
+    c.drawString(40,  y, "Descripción")
+    c.drawString(360, y, "Cant.")
+    c.drawString(410, y, "P. Base")
+    c.drawString(470, y, "P. c/desc")
+    c.drawString(540, y, "Subtotal")
+    y -= 15
+    c.line(40, y, width - 40, y)
+    y -= 10
 
-    c.setFont("Helvetica", 9)
+    c.setFont("Helvetica", 8)
 
+    total_desc = 0.0
     for it in items:
         desc = _pdf_text(it["descripcion"])
-        cant = float(it["cantidad"] or 0)
-        p_base = float(it["precio_unit"] or 0)
-        p_desc = float(it["precio_final"] or 0) if it["precio_final"] is not None else round(p_base * factor, 2)
-        subtotal = round(p_desc * cant, 2)
+        cant = it["cantidad"]
+        p_base = it["precio_unit"]
+        if it.get("precio_final") is not None:
+            p_desc = float(it["precio_final"] or 0)
+        else:
+            p_desc = p_base * (1 - e_desc / 100.0)
 
-        # Salto de página si se acaba el espacio
-        if y < 110:
+        sub = cant * p_desc
+        total_desc += sub
+
+        c.drawString(40, y, desc[:70])
+        c.drawRightString(390, y, f"{cant:g}")
+        c.drawRightString(455, y, f"{p_base:.2f}")
+        c.drawRightString(525, y, f"{p_desc:.2f}")
+        c.drawRightString(width - 40, y, f"{sub:.2f}")
+
+        y -= 12
+        if y < 80:
             c.showPage()
             y = height - 80
+            c.setFont("Helvetica", 9)
 
-        c.drawString(60, y, desc[:70])
-        c.drawRightString(width - 260, y, f"{cant:g}")
-        c.drawRightString(width - 190, y, f"{p_base:.2f}")
-        c.drawRightString(width - 120, y, f"{p_desc:.2f}")
-        c.drawRightString(width - 60, y, f"{subtotal:.2f}")
-        y -= 14
-
-    # Total
     y -= 10
-    c.line(width - 260, y, width - 60, y)
-    y -= 18
+    c.line(350, y, width - 40, y)
+    y -= 15
     c.setFont("Helvetica-Bold", 11)
-    c.drawRightString(width - 60, y, f"TOTAL (con descuento): Bs {total_desc:.2f}")
+    c.drawRightString(width - 40, y, f"TOTAL (con descuento): Bs {total_desc:.2f}")
 
     c.showPage()
     c.save()
     buffer.seek(0)
 
-    # Marcar como facturado SOLO si corresponde (y guardar total_desc)
-    if marcar_facturado:
-        try:
-            cur.execute("UPDATE pedidos SET estado='facturado', total=%s, fecha_facturacion=NOW() WHERE id=%s", (total_desc, pedido_id))
-        except Exception:
-            conn.rollback()
-            cur.execute("UPDATE pedidos SET estado='facturado', total=%s WHERE id=%s", (total_desc, pedido_id))
-        conn.commit()
-        audit("PEDIDO_FACTURADO", "pedido", pedido_id, {"total": float(total_desc)})
-
-    conn.close()
-
     return send_file(
         buffer,
         as_attachment=False,
-        download_name=f"proforma_{pedido_id}.pdf",
+        download_name=f"factura_{pedido_id}.pdf",
         mimetype="application/pdf",
     )
-
 
 
 @app.route("/api/reporte_facturados")
@@ -1120,7 +967,10 @@ def reporte_facturados():
         nit = r.get("nit") or ""
 
     # fecha puede venir como datetime o string
-        fecha_str = fmt_fecha_lp(fecha)
+        if hasattr(fecha, "strftime"):
+            fecha_str = fecha.strftime("%Y-%m-%d %H:%M")
+        else:
+            fecha_str = str(fecha)
 
         if y < 60:
             c.showPage()
