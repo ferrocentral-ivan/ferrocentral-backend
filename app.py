@@ -596,7 +596,7 @@ def api_pedido_detalle(pedido_id):
 
     # Items del pedido
     cur.execute("""
-        SELECT producto_id, descripcion, cantidad, precio_unit
+        SELECT producto_id, descripcion, cantidad, precio_unit, precio_final
         FROM pedido_items
         WHERE pedido_id = %s
     """, (pedido_id,))
@@ -608,6 +608,11 @@ def api_pedido_detalle(pedido_id):
         "pedido": dict(header),
         "items": [dict(i) for i in items]
     })
+
+def ensure_precio_final_column(cur):
+    # Seguro en Postgres: si ya existe, no hace nada
+    cur.execute("ALTER TABLE pedido_items ADD COLUMN IF NOT EXISTS precio_final double precision")
+
 
 @app.route("/api/pedidos/<int:pedido_id>/cotizacion", methods=["POST"])
 @require_role("SUPER_ADMIN", "ADMIN")
@@ -673,23 +678,38 @@ def api_pedido_actualizar_cotizacion(pedido_id):
             if precio_final < 0:
                 precio_final = 0.0
 
-            # ✅ ACTUALIZAR usando precio_unit (no existe precio_final en tu BD)
+            # Asegurar columna precio_final (no rompe nada si ya existe)
+            ensure_precio_final_column(cur)
+
+            # Actualiza cantidad y precio_final (NO tocar precio_unit = precio web)
             cur.execute("""
                 UPDATE pedido_items
                 SET cantidad=%s,
-                    precio_unit=%s
+                    precio_final=%s
                 WHERE pedido_id=%s AND producto_id=%s
             """, (cantidad, precio_final, pedido_id, producto_id))
 
-             # ✅ Si por algún motivo no existía, lo insertamos con descripcion + precio_unit
+            # Si no existía el item, lo insertamos preservando precio_unit si viene en el payload
             if cur.rowcount == 0:
+                # Intentar capturar precio base si el front lo manda (si no, queda 0)
+                raw_base = it.get("precio_web")
+                if raw_base is None:
+                    raw_base = it.get("precio_base")
+                if raw_base is None:
+                    raw_base = it.get("precio_unit")  # algunos payloads usan esto como base
+                try:
+                    precio_base = float(raw_base or 0)
+                except Exception:
+                    precio_base = 0.0
+
                 cur.execute("""
-                    INSERT INTO pedido_items (pedido_id, producto_id, descripcion, cantidad, precio_unit)
-                    VALUES (%s, %s, %s, %s, %s)
+                    INSERT INTO pedido_items (pedido_id, producto_id, descripcion, cantidad, precio_unit, precio_final)
+                    VALUES (%s, %s, %s, %s, %s, %s)
                     ON CONFLICT (pedido_id, producto_id) DO UPDATE
                     SET cantidad=EXCLUDED.cantidad,
-                        precio_unit=EXCLUDED.precio_unit
-                """, (pedido_id, producto_id, descripcion, cantidad, precio_final))
+                        precio_final=EXCLUDED.precio_final
+                """, (pedido_id, producto_id, descripcion, cantidad, precio_base, precio_final))
+
 
             total += cantidad * precio_final
 
@@ -751,26 +771,16 @@ def proforma_pdf(pedido_id):
     e_correo = row.get("correo") or ""
     e_desc = float(row.get("descuento") or 0)
 
-    # 2) Traer items (si existe precio_final úsalo)
-    try:
-        cur.execute("""
-            SELECT descripcion, cantidad, precio_unit, precio_final
-            FROM pedido_items
-            WHERE pedido_id = %s
-            ORDER BY producto_id ASC
-        """, (pedido_id,))
-        items_db = cur.fetchall()
-        has_precio_final = True
-    except Exception:
-        conn.rollback()
-        cur.execute("""
-            SELECT descripcion, cantidad, precio_unit
-            FROM pedido_items
-            WHERE pedido_id = %s
-            ORDER BY producto_id ASC
-        """, (pedido_id,))
-        items_db = cur.fetchall()
-        has_precio_final = False
+    # 2) Traer items (precio_unit = base, precio_final = final)
+    ensure_precio_final_column(cur)
+    cur.execute("""
+        SELECT descripcion, cantidad, precio_unit, precio_final
+        FROM pedido_items
+        WHERE pedido_id = %s
+        ORDER BY producto_id ASC
+    """, (pedido_id,))
+    items_db = cur.fetchall()
+
 
     conn.close()
 
@@ -843,8 +853,8 @@ def proforma_pdf(pedido_id):
     c.drawString(60, y, "Descripción")
     c.drawRightString(380, y, "Cant.")
     c.drawRightString(455, y, "P. Base")
-    c.drawRightString(525, y, "P. c/desc")
-    c.drawRightString(width - 60, y, "Subtotal")
+    c.drawRightString(505, y, "P. c/desc")
+    c.drawRightString(width - 50, y, "Subtotal")
     y -= 10
     c.setLineWidth(0.5)
     c.line(60, y, width - 60, y)
@@ -868,8 +878,8 @@ def proforma_pdf(pedido_id):
         c.drawString(60, y, desc)
         c.drawRightString(380, y, f"{cant:g}")
         c.drawRightString(455, y, f"{p_base:.2f}")
-        c.drawRightString(525, y, f"{p_desc:.2f}")
-        c.drawRightString(width - 60, y, f"{sub:.2f}")
+        c.drawRightString(505, y, f"{p_desc:.2f}")
+        c.drawRightString(width - 50, y, f"{sub:.2f}")
         y -= 12
 
         if y < 100:
