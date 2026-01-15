@@ -854,7 +854,7 @@ def proforma_pdf(pedido_id):
 
     # Encabezado rojo
     c.setFillColor(colors.HexColor("#e53935"))
-    c.rect(0, height - 90, width, 90, stroke=0, fill=1)
+    c.rect(0, height - 90, width, 45, stroke=0, fill=1)
 
     c.setFillColor(colors.white)
     c.setFont("Helvetica-Bold", 20)
@@ -944,7 +944,7 @@ def proforma_pdf(pedido_id):
         valido_hasta = dt + timedelta(days=5)
 
         # Texto en azul
-        c.setFillColor(colors.HexColor("#1e88e5"))
+        c.setFillColor(colors.HexColor("#8B0000"))
         c.drawString(60, y, f"Fecha y hora: {dt.strftime('%Y-%m-%d %H:%M')}"); y -= 12
         c.drawString(60, y, f"Válido hasta: {valido_hasta.strftime('%Y-%m-%d %H:%M')}"); y -= 12
 
