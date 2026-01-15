@@ -871,10 +871,10 @@ def proforma_pdf(pedido_id):
     def _draw_logo(img_source):
         c.drawImage(
             img_source,
-            10,                 # X: izquierda
-            height - 115,       # Y: debajo de la franja roja
-            width=155,          # ajusta SOLO tamaño si quieres
-            height=100,          # ajusta SOLO tamaño si quieres
+            30,                 # X: izquierda
+            height - 145,       # Y: debajo de la franja roja
+            width=175,          # ajusta SOLO tamaño si quieres
+            height=120,          # ajusta SOLO tamaño si quieres
             preserveAspectRatio=True,
             mask="auto",
         )
