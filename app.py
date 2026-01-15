@@ -817,6 +817,35 @@ def proforma_pdf(pedido_id):
     c.setFont("Helvetica-Bold", 12)
     c.drawRightString(width - 50, height - 55, f"N° {pedido_id}")
 
+        # --- LOGO (local o URL fallback) ---
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    logo_path = os.path.join(base_dir, "img", "logos", "logo_empresa.png")
+
+    def _draw_logo(img_source):
+        # Ajusta posición/tamaño sin invadir el título
+        c.drawImage(
+            img_source,
+            40,                 # X (izquierda)
+            height - 90 - 60,   # Y (debajo de la franja roja)
+            width=140,
+            height=60,
+            preserveAspectRatio=True,
+            mask="auto",
+        )
+
+    try:
+        if os.path.exists(logo_path):
+            _draw_logo(logo_path)
+        else:
+            # Fallback: logo desde el frontend (Hostinger)
+            logo_url = "https://ferrocentral.com.bo/img/logos/logo_empresa.png"
+            with urlopen(logo_url, timeout=10) as resp:
+                data = resp.read()
+            _draw_logo(ImageReader(BytesIO(data)))
+    except Exception as e:
+        print("⚠️ ERROR dibujando logo en PROFORMA:", e)
+
+
     # Datos empresa
     y = height - 120
     c.setFillColor(colors.black)
