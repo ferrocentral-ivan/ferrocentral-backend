@@ -885,9 +885,9 @@ def proforma_pdf(pedido_id):
         c.drawImage(
             img_source,
             25,                 # X: izquierda
-            height - (header_h + 135),
-            width=185,          # ajusta SOLO tamaño si quieres
-            height=130,          # ajusta SOLO tamaño si quieres
+            height - (header_h + 115),
+            width=195,          # ajusta SOLO tamaño si quieres
+            height=140,          # ajusta SOLO tamaño si quieres
             preserveAspectRatio=True,
             mask="auto",
         )
