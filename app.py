@@ -855,19 +855,26 @@ def proforma_pdf(pedido_id):
     # Encabezado rojo
     header_h = 45
 
+    def _draw_proforma_header():
+        c.setFillColor(colors.HexColor("#e53935"))
+        c.rect(0, height - header_h, width, header_h, stroke=0, fill=1)
+
+        texto_y_local = height - (header_h / 2) - 7
+
+        c.setFillColor(colors.white)
+        c.setFont("Helvetica-Bold", 20)
+        c.drawCentredString(width / 2, texto_y_local, "FACTURA PROFORMA")
+
+        c.setFont("Helvetica-Bold", 12)
+        c.drawRightString(width - 50, texto_y_local, f"N° {pedido_id}")
+
+        c.setFillColor(colors.black)
+
+
+
     # Franja roja superior (sin blanco arriba)
-    c.setFillColor(colors.HexColor("#e53935"))
-    c.rect(0, height - header_h, width, header_h, stroke=0, fill=1)
+    _draw_proforma_header()
 
-    # Texto centrado dentro de la franja
-    texto_y = height - (header_h / 2) - 7
-
-    c.setFillColor(colors.white)
-    c.setFont("Helvetica-Bold", 20)
-    c.drawCentredString(width / 2, texto_y, "FACTURA PROFORMA")
-
-    c.setFont("Helvetica-Bold", 12)
-    c.drawRightString(width - 50, texto_y, f"N° {pedido_id}")
 
 
     # Logo (local o URL fallback) - SOLO VISUAL
@@ -878,7 +885,7 @@ def proforma_pdf(pedido_id):
         c.drawImage(
             img_source,
             25,                 # X: izquierda
-            height - 200,       # Y: debajo de la franja roja
+            height - (header_h + 155),
             width=185,          # ajusta SOLO tamaño si quieres
             height=130,          # ajusta SOLO tamaño si quieres
             preserveAspectRatio=True,
@@ -899,7 +906,7 @@ def proforma_pdf(pedido_id):
 
 
     # Datos empresa
-    y = height - 120
+    y = height - (header_h + 70)
     c.setFillColor(colors.black)
     c.setFont("Helvetica-Bold", 12)
     c.drawCentredString(width / 2, y, "Distribuidora FerroCentral")
@@ -912,7 +919,7 @@ def proforma_pdf(pedido_id):
     c.drawCentredString(width / 2, y, "Tel.Fijo: 4792110 - WhatsApp: 76920918")
 
     # Datos cliente
-    y -= 35
+    y -= 25
     c.setFont("Helvetica-Bold", 11)
     c.drawString(60, y, "Datos del cliente")
     y -= 15
@@ -982,6 +989,8 @@ def proforma_pdf(pedido_id):
 
     c.setFont("Helvetica", 8)
     total_desc = 0.0
+    total_base = 0.0
+
 
     for it in items:
         desc = _pdf_text(it["descripcion"])
@@ -990,6 +999,8 @@ def proforma_pdf(pedido_id):
         p_desc = it["precio_final"] if it.get("precio_final") is not None else (p_base * (1 - e_desc / 100.0))
         sub = cant * p_desc
         total_desc += sub
+        total_base += cant * p_base
+
 
         # --- WRAP de descripción sin pisar columnas ---
         line_height = 12
@@ -1015,7 +1026,9 @@ def proforma_pdf(pedido_id):
             # Si ya no hay espacio, saltar de página y continuar
             if y < 100:
                 c.showPage()
-                y = height - 60
+                _draw_proforma_header()
+
+                y = height - (header_h + 45)   # arranque bajo la franja roja
                 c.setFont("Helvetica", 8)
 
                 # (Opcional pero recomendado): redibujar encabezado de tabla en nueva página
@@ -1040,8 +1053,23 @@ def proforma_pdf(pedido_id):
         # Control de salto de página para el próximo ítem
         if y < 100:
             c.showPage()
-            y = height - 60
+            _draw_proforma_header()
+            y = height - (header_h + 45)
             c.setFont("Helvetica", 8)
+
+            # (recomendado) repetir encabezado de tabla también aquí
+            c.setFont("Helvetica-Bold", 9)
+            c.drawString(60, y, "Descripción")
+            c.drawRightString(380, y, "Cant.")
+            c.drawRightString(455, y, "P. Base")
+            c.drawRightString(505, y, "P. c/desc")
+            c.drawRightString(width - 50, y, "Subtotal")
+            y -= 10
+            c.setLineWidth(0.5)
+            c.line(60, y, width - 60, y)
+            y -= 12
+            c.setFont("Helvetica", 8)
+
 
 
     y -= 10
@@ -1050,9 +1078,9 @@ def proforma_pdf(pedido_id):
     y -= 18
 
     c.setFont("Helvetica-Bold", 11)
+    c.drawRightString(width - 60, y, f"TOTAL (sin descuento): Bs {total_base:.2f}")
+    y -= 14
     c.drawRightString(width - 60, y, f"TOTAL (con descuento): Bs {total_desc:.2f}")
-
-    c.showPage()
     c.save()
     buffer.seek(0)
 
@@ -1221,8 +1249,10 @@ def generar_factura_pdf(pedido_id):
     y -= 10
 
     c.setFont("Helvetica", 8)
-
     total_desc = 0.0
+    total_base = 0.0
+
+
     for it in items:
         desc = _pdf_text(it["descripcion"])
         cant = it["cantidad"]
@@ -1234,6 +1264,8 @@ def generar_factura_pdf(pedido_id):
 
         sub = cant * p_desc
         total_desc += sub
+        total_base += cant * p_base
+
 
         c.drawString(40, y, desc[:70])
         c.drawRightString(390, y, f"{cant:g}")
