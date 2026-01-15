@@ -15,6 +15,8 @@ from reportlab.lib import colors
 from urllib.request import urlopen
 from reportlab.lib.utils import ImageReader
 import textwrap
+from zoneinfo import ZoneInfo
+
 
 
 
@@ -98,6 +100,35 @@ def send_reset_email(to_email, link):
 
 
 
+BO_TZ = ZoneInfo("America/La_Paz")
+UTC_TZ = ZoneInfo("UTC")
+
+def fmt_fecha_bo(fecha):
+    """
+    Convierte fecha (datetime o string) asumida en UTC -> hora Bolivia.
+    Devuelve string: YYYY-MM-DD HH:MM:SS
+    """
+    if fecha is None:
+        return ""
+
+    # Si viene como string tipo "2026-01-15 19:23:45"
+    if isinstance(fecha, str):
+        try:
+            # soporta "YYYY-MM-DD HH:MM:SS"
+            dt = datetime.strptime(fecha, "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            # fallback: devolver lo mismo si no parsea
+            return str(fecha)
+    else:
+        dt = fecha
+
+    # Si es naive, asumimos UTC (Render)
+    if getattr(dt, "tzinfo", None) is None:
+        dt = dt.replace(tzinfo=UTC_TZ)
+
+    # Convertir a Bolivia
+    dt_bo = dt.astimezone(BO_TZ)
+    return dt_bo.strftime("%Y-%m-%d %H:%M:%S")
 
 
 
@@ -551,6 +582,14 @@ def api_pedidos():
     rows = cur.fetchall()
     conn.close()
 
+    # ✅ Ajustar fecha a hora Bolivia SOLO para mostrar en el panel
+    for r in rows:
+        try:
+            r["fecha"] = fmt_fecha_bo(r.get("fecha"))
+        except Exception:
+            pass
+
+
     return jsonify({"ok": True, "pedidos": [dict(r) for r in rows]})
 
 
@@ -818,29 +857,9 @@ def proforma_pdf(pedido_id):
     c.drawRightString(width - 50, height - 55, f"N° {pedido_id}")
 
 
-    # Datos empresa + Logo (solo visual)
+    # Datos empresa
     y = height - 120
     c.setFillColor(colors.black)
-
-    # --- LOGO (más grande, mismo sector arriba-izq) ---
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    logo_path = os.path.join(base_dir, "img", "logos", "logo_empresa.png")
-
-    try:
-        if os.path.exists(logo_path):
-            c.drawImage(
-                logo_path,
-                65,          # X (zona izquierda, similar a tu ejemplo)
-                height - 175, # Y (altura del logo en el header)
-                width=95,     # ⬅️ MÁS GRANDE (ajusta aquí si quieres)
-                height=55,    # ⬅️ MÁS GRANDE
-                preserveAspectRatio=True,
-                mask="auto"
-            )
-    except Exception as e:
-        print("⚠️ Logo proforma no cargado:", e)
-
-    # --- TEXTO EMPRESA (igual que antes, centrado) ---
     c.setFont("Helvetica-Bold", 12)
     c.drawCentredString(width / 2, y, "Distribuidora FerroCentral")
     y -= 15
@@ -850,7 +869,6 @@ def proforma_pdf(pedido_id):
     c.drawCentredString(width / 2, y, "Of: Calle David Avestegui #555 Queru Queru Central")
     y -= 12
     c.drawCentredString(width / 2, y, "Tel.Fijo: 4792110 - WhatsApp: 76920918")
-
 
     # Datos cliente
     y -= 35
@@ -865,12 +883,12 @@ def proforma_pdf(pedido_id):
         s = str(s)
         return s.encode("cp1252", errors="replace").decode("cp1252")
 
-    c.drawString(220, y, f"Razón social: {_pdf_text(e_razon)}"); y -= 12
-    c.drawString(220, y, f"NIT: {_pdf_text(e_nit)}"); y -= 12
-    c.drawString(220, y, f"Contacto: {_pdf_text(e_contacto)}"); y -= 12
-    c.drawString(220, y, f"Teléfono: {_pdf_text(e_tel)}"); y -= 12
-    c.drawString(220, y, f"Correo: {_pdf_text(e_correo)}"); y -= 12
-    c.drawString(220, y, f"Descuento aplicado: {e_desc:.2f}%"); y -= 12
+    c.drawString(60, y, f"Razón social: {_pdf_text(e_razon)}"); y -= 12
+    c.drawString(60, y, f"NIT: {_pdf_text(e_nit)}"); y -= 12
+    c.drawString(60, y, f"Contacto: {_pdf_text(e_contacto)}"); y -= 12
+    c.drawString(60, y, f"Teléfono: {_pdf_text(e_tel)}"); y -= 12
+    c.drawString(60, y, f"Correo: {_pdf_text(e_correo)}"); y -= 12
+    c.drawString(60, y, f"Descuento aplicado: {e_desc:.2f}%"); y -= 12
 
     # Tabla
     y -= 10
@@ -1064,28 +1082,27 @@ def generar_factura_pdf(pedido_id):
     base_dir = os.path.dirname(os.path.abspath(__file__))
     logo_path = os.path.join(base_dir, "img", "logos", "logo_empresa.png")
 
-    def _draw_logo(img_source):
+    def _draw_logo_proforma(img_source):
         c.drawImage(
             img_source,
-            -30,
-            height - 70 - 120 + 10,
-            width=280,
-            height=120,
+            50,                 # X fijo: zona izquierda libre
+            height - 165,       # Y fijo: debajo de la franja roja
+            width=110,          # ⬅️ SOLO crece el logo
+            height=55,          # ⬅️ SOLO crece el logo
             preserveAspectRatio=True,
             mask="auto",
         )
 
     try:
         if os.path.exists(logo_path):
-            _draw_logo(logo_path)
+            _draw_logo_proforma(logo_path)
         else:
-            # Fallback: logo desde el frontend (Hostinger)
             logo_url = "https://ferrocentral.com.bo/img/logos/logo_empresa.png"
             with urlopen(logo_url, timeout=10) as resp:
                 data = resp.read()
-            _draw_logo(ImageReader(BytesIO(data)))
+            _draw_logo_proforma(ImageReader(BytesIO(data)))
     except Exception as e:
-        print("⚠️ ERROR dibujando logo:", e)
+        print("⚠️ Logo proforma no cargado:", e)
 
 
     # Datos empresa
