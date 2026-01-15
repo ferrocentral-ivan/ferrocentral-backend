@@ -626,8 +626,8 @@ def api_pedido_detalle(pedido_id):
 @require_role("SUPER_ADMIN", "ADMIN")
 def api_pedido_actualizar_cotizacion(pedido_id):
     """
-    Guarda/actualiza la cotización (cantidades y precio_final) sin duplicar items.
-    Acepta payloads antiguos y nuevos desde admin.html.
+    Guarda/actualiza la cotización (cantidades y PRECIO FINAL).
+    En este sistema, pedido_items.precio_unit se usa como PRECIO FINAL editable.
     """
     data = request.get_json(silent=True) or {}
     items = data.get("items") or []
@@ -637,7 +637,7 @@ def api_pedido_actualizar_cotizacion(pedido_id):
 
     conn = get_connection()
     try:
-        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur = conn.cursor()  # <-- NO RealDictCursor aquí
 
         blocked = forbid_if_not_owner(cur, pedido_id)
         if blocked:
@@ -664,7 +664,7 @@ def api_pedido_actualizar_cotizacion(pedido_id):
             if cantidad < 1:
                 cantidad = 1
 
-            # Aceptar llaves alternativas (admin antiguo mandaba precio_unit)
+            # precio final (acepta varias llaves)
             raw_pf = it.get("precio_final")
             if raw_pf is None:
                 raw_pf = it.get("precio_unit")
@@ -682,30 +682,33 @@ def api_pedido_actualizar_cotizacion(pedido_id):
             if precio_final < 0:
                 precio_final = 0.0
 
-            # actualizar item (NO tocar descripcion ni precio_unit base)
+            # redondeo consistente
+            precio_final = round(precio_final + 1e-9, 2)
+
+            # actualizar item (precio_unit = PRECIO FINAL)
             cur.execute("""
                 UPDATE pedido_items
                 SET cantidad=%s,
-                    precio_final=%s
+                    precio_unit=%s
                 WHERE pedido_id=%s AND producto_id=%s
             """, (cantidad, precio_final, pedido_id, producto_id))
 
-            # si no existía por algún motivo, lo insertamos (evita error silencioso)
+            # si no existía, lo insertamos (sin descripcion para no pisar datos)
             if cur.rowcount == 0:
                 cur.execute("""
-                    INSERT INTO pedido_items (pedido_id, producto_id, cantidad, precio_final)
+                    INSERT INTO pedido_items (pedido_id, producto_id, cantidad, precio_unit)
                     VALUES (%s, %s, %s, %s)
                     ON CONFLICT (pedido_id, producto_id) DO UPDATE
                     SET cantidad=EXCLUDED.cantidad,
-                        precio_final=EXCLUDED.precio_final
+                        precio_unit=EXCLUDED.precio_unit
                 """, (pedido_id, producto_id, cantidad, precio_final))
 
             total += cantidad * precio_final
 
-        # Guardar total (opcional)
+        total = round(total + 1e-9, 2)
         cur.execute("UPDATE pedidos SET total=%s WHERE id=%s", (total, pedido_id))
-        conn.commit()
 
+        conn.commit()
         return jsonify({"ok": True, "total": total})
 
     except Exception as e:
@@ -720,6 +723,7 @@ def api_pedido_actualizar_cotizacion(pedido_id):
             conn.close()
         except Exception:
             pass
+
 
 
 @app.route("/api/facturar/<int:pedido_id>")
@@ -872,9 +876,36 @@ def generar_factura_pdf(pedido_id):
     for it in items:
         desc = _pdf_text(it["descripcion"])
         cant = it["cantidad"]
-        p_base = it["precio_unit"]
-        p_desc = p_base * (1 - e_desc / 100.0)
-        sub = cant * p_desc
+        factor = (1 - e_desc / 100.0)
+        if factor <= 0:
+            factor = 1.0
+
+        total_desc = 0.0
+        for it in items:
+            desc = _pdf_text(it["descripcion"])
+            cant = it["cantidad"]
+
+            # En tu BD, precio_unit ES el precio final (editable) ya con descuento aplicado
+            p_final = float(it["precio_unit"] or 0)
+
+            # Reconstruimos "P. Base" solo para mostrarlo
+            p_base = p_final / factor
+
+            sub = cant * p_final
+            total_desc += sub
+
+            c.drawString(40, y, desc[:70])
+            c.drawRightString(390, y, f"{cant:g}")
+            c.drawRightString(455, y, f"{p_base:.2f}")     # P. Base (reconstruido)
+            c.drawRightString(525, y, f"{p_final:.2f}")    # P. c/desc (final real)
+            c.drawRightString(width - 40, y, f"{sub:.2f}")
+
+            y -= 12
+            if y < 80:
+                c.showPage()
+                y = height - 80
+                c.setFont("Helvetica", 9)
+
         total_desc += sub
 
         c.drawString(40, y, desc[:70])
