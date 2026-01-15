@@ -647,6 +647,13 @@ def api_pedido_detalle(pedido_id):
     if header is None:
         conn.close()
         return jsonify({"ok": False, "error": "Pedido no encontrado"}), 404
+    
+    # ✅ Ajustar fecha a hora Bolivia también en el DETALLE
+    try:
+        header["fecha"] = fmt_fecha_bo(header.get("fecha"))
+    except Exception:
+        pass
+
 
     # Items del pedido
     cur.execute("""
@@ -855,6 +862,34 @@ def proforma_pdf(pedido_id):
 
     c.setFont("Helvetica-Bold", 12)
     c.drawRightString(width - 50, height - 55, f"N° {pedido_id}")
+
+
+    # Logo (local o URL fallback) - SOLO VISUAL
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    logo_path = os.path.join(base_dir, "img", "logos", "logo_empresa.png")
+
+    def _draw_logo(img_source):
+        c.drawImage(
+            img_source,
+            50,                 # X: izquierda
+            height - 165,       # Y: debajo de la franja roja
+            width=110,          # ajusta SOLO tamaño si quieres
+            height=55,          # ajusta SOLO tamaño si quieres
+            preserveAspectRatio=True,
+            mask="auto",
+        )
+
+    try:
+        if os.path.exists(logo_path):
+            _draw_logo(logo_path)
+        else:
+            logo_url = "https://ferrocentral.com.bo/img/logos/logo_empresa.png"
+            with urlopen(logo_url, timeout=10) as resp:
+                data = resp.read()
+            _draw_logo(ImageReader(BytesIO(data)))
+    except Exception as e:
+        print("⚠️ Logo proforma no cargado:", e)
+
 
 
     # Datos empresa
