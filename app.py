@@ -588,7 +588,13 @@ def api_pedidos():
     rows = cur.fetchall()
     conn.close()
 
-    return jsonify({"ok": True, "pedidos": [dict(r) for r in rows]})
+    pedidos = []
+    for r in rows:
+        d = dict(r)
+        d["fecha_str"] = fmt_la_paz(d.get("fecha"))
+        pedidos.append(d)
+
+    return jsonify({"ok": True, "pedidos": pedidos})
 
 
 @app.route("/api/pedidos_json")
@@ -655,11 +661,15 @@ def api_pedido_detalle(pedido_id):
     items = cur.fetchall()
     conn.close()
 
+    pedido = dict(header)
+    pedido["fecha_str"] = fmt_la_paz(pedido.get("fecha"))
+
     return jsonify({
         "ok": True,
-        "pedido": dict(header),
+        "pedido": pedido,
         "items": [dict(i) for i in items]
     })
+
 
 @app.route("/api/pedidos/<int:pedido_id>/cotizacion", methods=["POST"])
 @require_role("SUPER_ADMIN", "ADMIN")
@@ -1117,7 +1127,6 @@ def generar_factura_pdf(pedido_id):
         cur.execute("""
             UPDATE pedidos
             SET estado = 'facturado',
-                fecha = NOW(),
                 total = %s
             WHERE id = %s
         """, (float(total_desc), pedido_id))
@@ -1198,10 +1207,8 @@ def reporte_facturados():
         nit = r.get("nit") or ""
 
     # fecha puede venir como datetime o string
-        if hasattr(fecha, "strftime"):
-            fecha_str = fmt_la_paz(fecha)
-        else:
-            fecha_str = str(fecha)
+        fecha_str = fmt_la_paz(fecha)
+
 
         if y < 60:
             c.showPage()
