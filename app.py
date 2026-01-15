@@ -713,6 +713,188 @@ def api_pedido_actualizar_cotizacion(pedido_id):
         except Exception:
             pass
 
+@app.route("/api/proforma/<int:pedido_id>")
+@require_role("SUPER_ADMIN", "ADMIN")
+def proforma_pdf(pedido_id):
+    """
+    Genera PDF de PROFORMA sin marcar el pedido como facturado.
+    (Lo usa el botón "Guardar cambios de cotización" del panel admin.)
+    """
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    blocked = forbid_if_not_owner(cur, pedido_id)
+    if blocked:
+        conn.close()
+        return blocked
+
+    # 1) Traer cabecera pedido + empresa
+    cur.execute("""
+        SELECT p.id, p.fecha, p.total, p.estado, p.notas,
+               e.razon_social, e.nit, e.contacto, e.telefono, e.correo,
+               COALESCE(e.descuento, 0) AS descuento
+        FROM pedidos p
+        JOIN empresas e ON p.empresa_id = e.id
+        WHERE p.id = %s
+    """, (pedido_id,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"ok": False, "error": "Pedido no encontrado"}), 404
+
+    p_fecha = row.get("fecha")
+    p_notas = row.get("notas") or ""
+    e_razon = row.get("razon_social") or ""
+    e_nit = row.get("nit") or ""
+    e_contacto = row.get("contacto") or ""
+    e_tel = row.get("telefono") or ""
+    e_correo = row.get("correo") or ""
+    e_desc = float(row.get("descuento") or 0)
+
+    # 2) Traer items (si existe precio_final úsalo)
+    try:
+        cur.execute("""
+            SELECT descripcion, cantidad, precio_unit, precio_final
+            FROM pedido_items
+            WHERE pedido_id = %s
+            ORDER BY producto_id ASC
+        """, (pedido_id,))
+        items_db = cur.fetchall()
+        has_precio_final = True
+    except Exception:
+        conn.rollback()
+        cur.execute("""
+            SELECT descripcion, cantidad, precio_unit
+            FROM pedido_items
+            WHERE pedido_id = %s
+            ORDER BY producto_id ASC
+        """, (pedido_id,))
+        items_db = cur.fetchall()
+        has_precio_final = False
+
+    conn.close()
+
+    items = []
+    for r in items_db:
+        items.append({
+            "descripcion": (r.get("descripcion") or ""),
+            "cantidad": float(r.get("cantidad") or 0),
+            "precio_unit": float(r.get("precio_unit") or 0),
+            "precio_final": (None if (not has_precio_final or r.get("precio_final") is None)
+                            else float(r.get("precio_final") or 0)),
+        })
+
+    # 3) Generar el PDF (mismo formato que facturar, pero sin cambiar estado)
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+
+    # Encabezado rojo
+    c.setFillColor(colors.HexColor("#e53935"))
+    c.rect(0, height - 90, width, 90, stroke=0, fill=1)
+
+    c.setFillColor(colors.white)
+    c.setFont("Helvetica-Bold", 20)
+    c.drawCentredString(width / 2, height - 55, "FACTURA PROFORMA")
+
+    c.setFont("Helvetica-Bold", 12)
+    c.drawRightString(width - 50, height - 55, f"N° {pedido_id}")
+
+    # Datos empresa
+    y = height - 120
+    c.setFillColor(colors.black)
+    c.setFont("Helvetica-Bold", 12)
+    c.drawCentredString(width / 2, y, "Distribuidora FerroCentral")
+    y -= 15
+    c.setFont("Helvetica", 10)
+    c.drawCentredString(width / 2, y, "NIT: 454443545")
+    y -= 12
+    c.drawCentredString(width / 2, y, "Of: Calle David Avestegui #555 Queru Queru Central")
+    y -= 12
+    c.drawCentredString(width / 2, y, "Tel.Fijo: 4792110 - WhatsApp: 76920918")
+
+    # Datos cliente
+    y -= 35
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(60, y, "Datos del cliente")
+    y -= 15
+    c.setFont("Helvetica", 10)
+
+    def _pdf_text(s):
+        if s is None:
+            return ""
+        s = str(s)
+        return s.encode("cp1252", errors="replace").decode("cp1252")
+
+    c.drawString(60, y, f"Razón social: {_pdf_text(e_razon)}"); y -= 12
+    c.drawString(60, y, f"NIT: {_pdf_text(e_nit)}"); y -= 12
+    c.drawString(60, y, f"Contacto: {_pdf_text(e_contacto)}"); y -= 12
+    c.drawString(60, y, f"Teléfono: {_pdf_text(e_tel)}"); y -= 12
+    c.drawString(60, y, f"Correo: {_pdf_text(e_correo)}"); y -= 12
+    c.drawString(60, y, f"Descuento aplicado: {e_desc:.2f}%"); y -= 12
+
+    # Tabla
+    y -= 10
+    c.setLineWidth(1)
+    c.line(60, y, width - 60, y)
+    y -= 14
+
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(60, y, "Descripción")
+    c.drawRightString(380, y, "Cant.")
+    c.drawRightString(455, y, "P. Base")
+    c.drawRightString(525, y, "P. c/desc")
+    c.drawRightString(width - 60, y, "Subtotal")
+    y -= 10
+    c.setLineWidth(0.5)
+    c.line(60, y, width - 60, y)
+    y -= 12
+
+    c.setFont("Helvetica", 8)
+    total_desc = 0.0
+
+    for it in items:
+        desc = _pdf_text(it["descripcion"])
+        cant = it["cantidad"]
+        p_base = it["precio_unit"]
+        p_desc = it["precio_final"] if it.get("precio_final") is not None else (p_base * (1 - e_desc / 100.0))
+        sub = cant * p_desc
+        total_desc += sub
+
+        # Corte de línea simple
+        if len(desc) > 68:
+            desc = desc[:68] + "..."
+
+        c.drawString(60, y, desc)
+        c.drawRightString(380, y, f"{cant:g}")
+        c.drawRightString(455, y, f"{p_base:.2f}")
+        c.drawRightString(525, y, f"{p_desc:.2f}")
+        c.drawRightString(width - 60, y, f"{sub:.2f}")
+        y -= 12
+
+        if y < 100:
+            c.showPage()
+            y = height - 60
+
+    y -= 10
+    c.setLineWidth(1)
+    c.line(380, y, width - 60, y)
+    y -= 18
+
+    c.setFont("Helvetica-Bold", 11)
+    c.drawRightString(width - 60, y, f"TOTAL (con descuento): Bs {total_desc:.2f}")
+
+    c.showPage()
+    c.save()
+    buffer.seek(0)
+
+    return send_file(
+        buffer,
+        as_attachment=False,
+        download_name=f"proforma_{pedido_id}.pdf",
+        mimetype="application/pdf",
+    )
+
 
 @app.route("/api/facturar/<int:pedido_id>")
 @require_role("SUPER_ADMIN", "ADMIN")
