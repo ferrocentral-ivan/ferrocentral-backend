@@ -12,6 +12,9 @@ from psycopg2.extras import RealDictCursor
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
+from urllib.request import urlopen
+from reportlab.lib.utils import ImageReader
+import textwrap
 
 
 
@@ -875,20 +878,58 @@ def proforma_pdf(pedido_id):
         sub = cant * p_desc
         total_desc += sub
 
-        # Corte de línea simple
-        if len(desc) > 68:
-            desc = desc[:68] + "..."
+        # --- WRAP de descripción sin pisar columnas ---
+        line_height = 12
 
-        c.drawString(60, y, desc)
+        # Ajusta el ancho por caracteres. (8pt suele rendir bien con 58-62 chars)
+        wrapped = textwrap.wrap(desc, width=62) or [""]
+
+        # Si la descripción es muy larga, puedes limitar líneas (opcional):
+        # if len(wrapped) > 4:
+        #     wrapped = wrapped[:4]
+        #     wrapped[-1] = wrapped[-1] + "..."
+
+        # 1) Imprime primera línea con columnas numéricas
+        c.drawString(60, y, wrapped[0])
         c.drawRightString(380, y, f"{cant:g}")
         c.drawRightString(455, y, f"{p_base:.2f}")
         c.drawRightString(505, y, f"{p_desc:.2f}")
         c.drawRightString(width - 50, y, f"{sub:.2f}")
-        y -= 12
+        y -= line_height
 
+        # 2) Imprime líneas restantes SOLO de descripción
+        for extra_line in wrapped[1:]:
+            # Si ya no hay espacio, saltar de página y continuar
+            if y < 100:
+                c.showPage()
+                y = height - 60
+                c.setFont("Helvetica", 8)
+
+                # (Opcional pero recomendado): redibujar encabezado de tabla en nueva página
+                c.setFont("Helvetica-Bold", 9)
+                c.drawString(60, y, "Descripción")
+                c.drawRightString(380, y, "Cant.")
+                c.drawRightString(455, y, "P. Base")
+                c.drawRightString(505, y, "P. c/desc")
+                c.drawRightString(width - 50, y, "Subtotal")
+                y -= 10
+                c.setLineWidth(0.5)
+                c.line(60, y, width - 60, y)
+                y -= 12
+                c.setFont("Helvetica", 8)
+
+            c.drawString(60, y, extra_line)
+            y -= line_height
+
+        # Separación extra entre productos (opcional)
+        # y -= 2
+
+        # Control de salto de página para el próximo ítem
         if y < 100:
             c.showPage()
             y = height - 60
+            c.setFont("Helvetica", 8)
+
 
     y -= 10
     c.setLineWidth(1)
@@ -997,22 +1038,33 @@ def generar_factura_pdf(pedido_id):
     c.setFont("Helvetica-Bold", 12)
     c.drawRightString(width - 40, height - 30, f"Nº {pedido_id}")
 
-    # Logo (si existe)
+    # Logo (local o URL fallback)
     base_dir = os.path.dirname(os.path.abspath(__file__))
     logo_path = os.path.join(base_dir, "img", "logos", "logo_empresa.png")
-    if os.path.exists(logo_path):
-        try:
-            c.drawImage(
-                logo_path,
-                -30,
-                height - 70 - 120 + 10,
-                width=280,
-                height=120,
-                preserveAspectRatio=True,
-                mask="auto",
-            )
-        except Exception as e:
-            print("⚠️ ERROR dibujando logo:", e)
+
+    def _draw_logo(img_source):
+        c.drawImage(
+            img_source,
+            -30,
+            height - 70 - 120 + 10,
+            width=280,
+            height=120,
+            preserveAspectRatio=True,
+            mask="auto",
+        )
+
+    try:
+        if os.path.exists(logo_path):
+            _draw_logo(logo_path)
+        else:
+            # Fallback: logo desde el frontend (Hostinger)
+            logo_url = "https://ferrocentral.com.bo/img/logos/logo_empresa.png"
+            with urlopen(logo_url, timeout=10) as resp:
+                data = resp.read()
+            _draw_logo(ImageReader(BytesIO(data)))
+    except Exception as e:
+        print("⚠️ ERROR dibujando logo:", e)
+
 
     # Datos empresa
     c.setFillColor(colors.black)
