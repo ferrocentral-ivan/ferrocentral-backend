@@ -871,10 +871,10 @@ def proforma_pdf(pedido_id):
     def _draw_logo(img_source):
         c.drawImage(
             img_source,
-            50,                 # X: izquierda
-            height - 165,       # Y: debajo de la franja roja
-            width=110,          # ajusta SOLO tamaño si quieres
-            height=55,          # ajusta SOLO tamaño si quieres
+            10,                 # X: izquierda
+            height - 115,       # Y: debajo de la franja roja
+            width=155,          # ajusta SOLO tamaño si quieres
+            height=100,          # ajusta SOLO tamaño si quieres
             preserveAspectRatio=True,
             mask="auto",
         )
@@ -924,6 +924,38 @@ def proforma_pdf(pedido_id):
     c.drawString(60, y, f"Teléfono: {_pdf_text(e_tel)}"); y -= 12
     c.drawString(60, y, f"Correo: {_pdf_text(e_correo)}"); y -= 12
     c.drawString(60, y, f"Descuento aplicado: {e_desc:.2f}%"); y -= 12
+
+    # --- Fecha/Hora y Vigencia (solo visual, en azul) ---
+    try:
+        # p_fecha viene de DB: puede ser datetime o string "YYYY-MM-DD HH:MM:SS"
+        if isinstance(p_fecha, str):
+            dt = datetime.strptime(p_fecha, "%Y-%m-%d %H:%M:%S")
+            # asumimos que ese dt es UTC (Render) y convertimos a Bolivia
+            dt = dt.replace(tzinfo=UTC_TZ).astimezone(BO_TZ)
+        elif hasattr(p_fecha, "tzinfo"):
+            # si es datetime naive, asumir UTC; si tiene tz, convertir
+            dt = p_fecha
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=UTC_TZ)
+            dt = dt.astimezone(BO_TZ)
+        else:
+            dt = datetime.now(BO_TZ)
+
+        valido_hasta = dt + timedelta(days=5)
+
+        # Texto en azul
+        c.setFillColor(colors.HexColor("#1e88e5"))
+        c.drawString(60, y, f"Fecha y hora: {dt.strftime('%Y-%m-%d %H:%M')}"); y -= 12
+        c.drawString(60, y, f"Válido hasta: {valido_hasta.strftime('%Y-%m-%d %H:%M')}"); y -= 12
+
+        # Volver a negro para el resto del PDF
+        c.setFillColor(colors.black)
+
+    except Exception as e:
+        # Si algo falla, no romper el PDF
+        c.setFillColor(colors.black)
+        print("WARN fecha/vigencia proforma:", e)
+
 
     # Tabla
     y -= 10
