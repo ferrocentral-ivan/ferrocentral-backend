@@ -853,15 +853,21 @@ def proforma_pdf(pedido_id):
     width, height = letter
 
     # Encabezado rojo
+    header_h = 45
+
+    # Franja roja superior (sin blanco arriba)
     c.setFillColor(colors.HexColor("#e53935"))
-    c.rect(0, height - 90, width, 45, stroke=0, fill=1)
+    c.rect(0, height - header_h, width, header_h, stroke=0, fill=1)
+
+    # Texto centrado dentro de la franja
+    texto_y = height - (header_h / 2) - 7
 
     c.setFillColor(colors.white)
     c.setFont("Helvetica-Bold", 20)
-    c.drawCentredString(width / 2, height - 55, "FACTURA PROFORMA")
+    c.drawCentredString(width / 2, texto_y, "FACTURA PROFORMA")
 
     c.setFont("Helvetica-Bold", 12)
-    c.drawRightString(width - 50, height - 55, f"N° {pedido_id}")
+    c.drawRightString(width - 50, texto_y, f"N° {pedido_id}")
 
 
     # Logo (local o URL fallback) - SOLO VISUAL
