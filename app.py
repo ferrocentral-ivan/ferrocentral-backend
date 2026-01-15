@@ -817,38 +817,30 @@ def proforma_pdf(pedido_id):
     c.setFont("Helvetica-Bold", 12)
     c.drawRightString(width - 50, height - 55, f"N° {pedido_id}")
 
-        # --- LOGO (local o URL fallback) ---
+
+    # Datos empresa + Logo (solo visual)
+    y = height - 120
+    c.setFillColor(colors.black)
+
+    # --- LOGO (más grande, mismo sector arriba-izq) ---
     base_dir = os.path.dirname(os.path.abspath(__file__))
     logo_path = os.path.join(base_dir, "img", "logos", "logo_empresa.png")
 
-    def _draw_logo(img_source):
-        # Ajusta posición/tamaño sin invadir el título
-        c.drawImage(
-            img_source,
-            40,                 # X (izquierda)
-            height - 90 - 60,   # Y (debajo de la franja roja)
-            width=140,
-            height=60,
-            preserveAspectRatio=True,
-            mask="auto",
-        )
-
     try:
         if os.path.exists(logo_path):
-            _draw_logo(logo_path)
-        else:
-            # Fallback: logo desde el frontend (Hostinger)
-            logo_url = "https://ferrocentral.com.bo/img/logos/logo_empresa.png"
-            with urlopen(logo_url, timeout=10) as resp:
-                data = resp.read()
-            _draw_logo(ImageReader(BytesIO(data)))
+            c.drawImage(
+                logo_path,
+                65,          # X (zona izquierda, similar a tu ejemplo)
+                height - 175, # Y (altura del logo en el header)
+                width=95,     # ⬅️ MÁS GRANDE (ajusta aquí si quieres)
+                height=55,    # ⬅️ MÁS GRANDE
+                preserveAspectRatio=True,
+                mask="auto"
+            )
     except Exception as e:
-        print("⚠️ ERROR dibujando logo en PROFORMA:", e)
+        print("⚠️ Logo proforma no cargado:", e)
 
-
-    # Datos empresa
-    y = height - 120
-    c.setFillColor(colors.black)
+    # --- TEXTO EMPRESA (igual que antes, centrado) ---
     c.setFont("Helvetica-Bold", 12)
     c.drawCentredString(width / 2, y, "Distribuidora FerroCentral")
     y -= 15
@@ -858,6 +850,7 @@ def proforma_pdf(pedido_id):
     c.drawCentredString(width / 2, y, "Of: Calle David Avestegui #555 Queru Queru Central")
     y -= 12
     c.drawCentredString(width / 2, y, "Tel.Fijo: 4792110 - WhatsApp: 76920918")
+
 
     # Datos cliente
     y -= 35
@@ -872,12 +865,12 @@ def proforma_pdf(pedido_id):
         s = str(s)
         return s.encode("cp1252", errors="replace").decode("cp1252")
 
-    c.drawString(60, y, f"Razón social: {_pdf_text(e_razon)}"); y -= 12
-    c.drawString(60, y, f"NIT: {_pdf_text(e_nit)}"); y -= 12
-    c.drawString(60, y, f"Contacto: {_pdf_text(e_contacto)}"); y -= 12
-    c.drawString(60, y, f"Teléfono: {_pdf_text(e_tel)}"); y -= 12
-    c.drawString(60, y, f"Correo: {_pdf_text(e_correo)}"); y -= 12
-    c.drawString(60, y, f"Descuento aplicado: {e_desc:.2f}%"); y -= 12
+    c.drawString(220, y, f"Razón social: {_pdf_text(e_razon)}"); y -= 12
+    c.drawString(220, y, f"NIT: {_pdf_text(e_nit)}"); y -= 12
+    c.drawString(220, y, f"Contacto: {_pdf_text(e_contacto)}"); y -= 12
+    c.drawString(220, y, f"Teléfono: {_pdf_text(e_tel)}"); y -= 12
+    c.drawString(220, y, f"Correo: {_pdf_text(e_correo)}"); y -= 12
+    c.drawString(220, y, f"Descuento aplicado: {e_desc:.2f}%"); y -= 12
 
     # Tabla
     y -= 10
