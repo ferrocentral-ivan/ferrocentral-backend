@@ -506,27 +506,49 @@ RETURNING id
     row_desc = cur.fetchone()
     descuento_pct = float(row_desc["descuento"] or 0)
 
-    # Guardar items (precio_unit SIEMPRE guardado como precio FINAL con descuento empresa aplicado)
+    # Guardar items:
+    # - precio_unit = PRECIO WEB/BASE
+    # - precio_final = PRECIO CON DESCUENTO (si existe la columna)
     total_final = 0.0
     for item in items:
         cantidad = float(item.get("cantidad") or 0)
+
+        # precio web/base que viene del carrito
         precio_base = float(item.get("precio_unit") or 0)
+
+        # precio con descuento empresa
         precio_final = precio_base * (1 - descuento_pct / 100.0)
-        # redondeo consistente a 2 decimales (como en UI)
         precio_final = round(precio_final + 1e-9, 2)
 
         total_final += precio_final * cantidad
 
-        cur.execute("""
-            INSERT INTO pedido_items (pedido_id, producto_id, descripcion, cantidad, precio_unit)
-            VALUES (%s, %s, %s, %s, %s)
-        """, (
-            pedido_id,
-            item.get("id"),
-            item.get("descripcion", ""),
-            cantidad,
-            precio_final
-        ))
+        # Intentar guardar con precio_final (nuevo esquema)
+        try:
+            cur.execute("""
+                INSERT INTO pedido_items (pedido_id, producto_id, descripcion, cantidad, precio_unit, precio_final)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, (
+                pedido_id,
+                item.get("id"),
+                item.get("descripcion", ""),
+                cantidad,
+                precio_base,
+                precio_final
+            ))
+        except Exception:
+            # Si la columna precio_final no existe, fallback legacy (guarda solo final en precio_unit)
+            conn.rollback()
+            cur.execute("""
+                INSERT INTO pedido_items (pedido_id, producto_id, descripcion, cantidad, precio_unit)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (
+                pedido_id,
+                item.get("id"),
+                item.get("descripcion", ""),
+                cantidad,
+                precio_final
+            ))
+
 
     # Recalcular total del pedido desde backend (evita diferencias front/back)
     total_final = round(total_final + 1e-9, 2)
