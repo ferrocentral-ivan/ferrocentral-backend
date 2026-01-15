@@ -3,6 +3,10 @@ from flask_cors import CORS
 import os, json, hashlib, secrets
 from datetime import datetime, timedelta
 from io import BytesIO
+from psycopg2.extras import RealDictCursor
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
+from reportlab.lib import colors
 from backend.database import get_connection, create_tables
 from werkzeug.security import generate_password_hash, check_password_hash
 from actualizar_precios_openpyxl import actualizar_precios
@@ -726,11 +730,23 @@ def api_pedido_actualizar_cotizacion(pedido_id):
 
 
 
+@app.route("/api/proforma/<int:pedido_id>")
+@require_role("SUPER_ADMIN", "ADMIN")
+def proforma(pedido_id):
+    """Genera PDF de proforma SIN cambiar estado."""
+    return _generar_pdf_pedido(pedido_id, marcar_facturado=False)
+
+
 @app.route("/api/facturar/<int:pedido_id>")
 @require_role("SUPER_ADMIN", "ADMIN")
-def generar_factura_pdf(pedido_id):
+def facturar(pedido_id):
+    """Genera PDF y marca el pedido como facturado (y lo registra en libro de ventas)."""
+    return _generar_pdf_pedido(pedido_id, marcar_facturado=True)
+
+
+def _generar_pdf_pedido(pedido_id: int, marcar_facturado: bool):
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
 
     blocked = forbid_if_not_owner(cur, pedido_id)
     if blocked:
@@ -738,7 +754,7 @@ def generar_factura_pdf(pedido_id):
         return blocked
 
     cur.execute("""
-        SELECT p.id, p.fecha, p.total, p.estado, p.notas,
+        SELECT p.id, p.fecha, p.estado, p.notas,
                e.razon_social, e.nit, e.contacto, e.telefono, e.correo,
                COALESCE(e.descuento, 0) AS descuento
         FROM pedidos p
@@ -746,16 +762,9 @@ def generar_factura_pdf(pedido_id):
         WHERE p.id = %s
     """, (pedido_id,))
     row = cur.fetchone()
-
     if not row:
         conn.close()
-        return jsonify({"ok": False, "error": "Pedido no encontrado"}), 404
-
-    p_id     = row["id"]
-    p_fecha  = row.get("fecha") or ""
-    p_total  = float(row.get("total") or 0)
-    p_estado = row.get("estado") or ""
-    p_notas  = row.get("notas") or ""
+        return jsonify({"error": "Pedido no encontrado"}), 404
 
     e_razon    = row.get("razon_social") or ""
     e_nit      = row.get("nit") or ""
@@ -763,16 +772,29 @@ def generar_factura_pdf(pedido_id):
     e_tel      = row.get("telefono") or ""
     e_correo   = row.get("correo") or ""
     e_desc     = float(row.get("descuento") or 0)
+    p_fecha    = row.get("fecha")
+    p_notas    = row.get("notas") or ""
 
-
-    # Items (también vienen como dict)
-    cur.execute("""
-        SELECT descripcion, cantidad, precio_unit
-        FROM pedido_items
-        WHERE pedido_id = %s
-        ORDER BY producto_id ASC
-    """, (pedido_id,))
-    items_db = cur.fetchall()
+    # Items (si existe precio_final lo usamos; si no existe, caemos a precio_unit)
+    try:
+        cur.execute("""
+            SELECT descripcion, cantidad, precio_unit, precio_final
+            FROM pedido_items
+            WHERE pedido_id = %s
+            ORDER BY producto_id ASC
+        """, (pedido_id,))
+        items_db = cur.fetchall()
+        has_precio_final = True
+    except Exception:
+        conn.rollback()
+        cur.execute("""
+            SELECT descripcion, cantidad, precio_unit
+            FROM pedido_items
+            WHERE pedido_id = %s
+            ORDER BY producto_id ASC
+        """, (pedido_id,))
+        items_db = cur.fetchall()
+        has_precio_final = False
 
     items = []
     for r in items_db:
@@ -780,15 +802,31 @@ def generar_factura_pdf(pedido_id):
             "descripcion": (r.get("descripcion") or ""),
             "cantidad": float(r.get("cantidad") or 0),
             "precio_unit": float(r.get("precio_unit") or 0),
+            "precio_final": float(r.get("precio_final") or 0) if (has_precio_final and r.get("precio_final") is not None) else None
         })
 
-    # Marcar como facturado
-    cur.execute("UPDATE pedidos SET estado = 'facturado' WHERE id = %s", (pedido_id,))
-    conn.commit()
-    audit("PEDIDO_FACTURADO", "pedido", pedido_id, {"total": float(p_total or 0)})
-    conn.close()
+    # Totales consistentes
+    factor = 1.0 - (e_desc / 100.0)
+    if factor <= 0:
+        factor = 1.0
 
-    # Generar PDF en memoria (más seguro que guardar archivo en Render)
+    total_base = 0.0
+    total_desc = 0.0
+    for it in items:
+        cant = float(it["cantidad"] or 0)
+        p_base = float(it["precio_unit"] or 0)
+        # Si hay precio_final guardado (cotización editada), manda; si no, calcula descuento empresa
+        if it["precio_final"] is not None:
+            p_desc = float(it["precio_final"] or 0)
+        else:
+            p_desc = round(p_base * factor, 2)
+        total_base += p_base * cant
+        total_desc += p_desc * cant
+
+    total_base = round(total_base, 2)
+    total_desc = round(total_desc, 2)
+
+    # Generar PDF en memoria
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=letter)
     width, height = letter
@@ -799,7 +837,6 @@ def generar_factura_pdf(pedido_id):
         s = str(s)
         return s.encode("cp1252", errors="replace").decode("cp1252")
 
-
     # Franja roja
     c.setFillColorRGB(0.88, 0.22, 0.22)
     c.rect(0, height - 80, width, 80, fill=1, stroke=0)
@@ -809,133 +846,105 @@ def generar_factura_pdf(pedido_id):
     c.drawCentredString(width / 2, height - 50, "FACTURA PROFORMA")
 
     c.setFont("Helvetica-Bold", 12)
-    c.drawRightString(width - 40, height - 30, f"Nº {pedido_id}")
-
-    # Logo (si existe)
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    logo_path = os.path.join(base_dir, "img", "logos", "logo_empresa.png")
-    if os.path.exists(logo_path):
-        try:
-            c.drawImage(
-                logo_path,
-                -30,
-                height - 70 - 120 + 10,
-                width=280,
-                height=120,
-                preserveAspectRatio=True,
-                mask="auto",
-            )
-        except Exception as e:
-            print("⚠️ ERROR dibujando logo:", e)
+    c.drawRightString(width - 50, height - 55, f"N° {pedido_id}")
 
     # Datos empresa
+    y = height - 120
     c.setFillColor(colors.black)
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(170, height - 110, "Distribuidora FerroCentral")
+    c.setFont("Helvetica-Bold", 12)
+    c.drawCentredString(width / 2, y, "Distribuidora FerroCentral")
+    y -= 15
     c.setFont("Helvetica", 10)
-    c.drawString(170, height - 125, "NIT: 454443545")
-    c.drawString(170, height - 140, "Of: Calle David Avestegui #555 Queru Queru Central")
-    c.drawString(170, height - 155, "Tel.Fijo: 4792110 - WhatsApp: 76920918")
+    c.drawCentredString(width / 2, y, "NIT: 454443545")
+    y -= 12
+    c.drawCentredString(width / 2, y, "Of: Calle David Avestegui #555 Queru Queru Central")
+    y -= 12
+    c.drawCentredString(width / 2, y, "Tel.Fijo: 4792110 - WhatsApp: 76920918")
 
     # Datos cliente
-    y = height - 190
+    y -= 35
     c.setFont("Helvetica-Bold", 11)
-    c.drawString(40, y, "Datos del cliente")
+    c.drawString(60, y, "Datos del cliente")
     y -= 15
     c.setFont("Helvetica", 10)
-    c.drawString(40, y, _pdf_text(f"Razón social: {e_razon}"))
-    y -= 12
-    c.drawString(40, y, _pdf_text(f"NIT: {e_nit}"))
-    y -= 12
-    c.drawString(40, y, _pdf_text(f"Contacto: {e_contacto}"))
-    y -= 12
-    c.drawString(40, y, _pdf_text(f"Teléfono: {e_tel}"))
-    y -= 12
-    c.drawString(40, y, _pdf_text(f"Correo: {e_correo}"))
-    y -= 12
-    c.drawString(40, y, f"Descuento aplicado: {e_desc:.2f}%")
 
-    y -= 10
-    c.line(40, y, width - 40, y)
-    y -= 20
+    c.drawString(60, y, f"Razón social: {_pdf_text(e_razon)}"); y -= 12
+    c.drawString(60, y, f"NIT: {_pdf_text(e_nit)}"); y -= 12
+    c.drawString(60, y, f"Contacto: {_pdf_text(e_contacto)}"); y -= 12
+    c.drawString(60, y, f"Teléfono: {_pdf_text(e_tel)}"); y -= 12
+    c.drawString(60, y, f"Correo: {_pdf_text(e_correo)}"); y -= 12
+    c.drawString(60, y, f"Descuento aplicado: {e_desc:.2f}%"); y -= 12
 
-    # Tabla
+    if p_notas:
+        c.drawString(60, y, f"Notas: {_pdf_text(p_notas)}"); y -= 12
+
+    # Línea separadora
+    y -= 8
+    c.line(60, y, width - 60, y)
+    y -= 18
+
+    # Encabezados tabla
     c.setFont("Helvetica-Bold", 10)
-    c.drawString(40,  y, "Descripción")
-    c.drawString(360, y, "Cant.")
-    c.drawString(410, y, "P. Base")
-    c.drawString(470, y, "P. c/desc")
-    c.drawString(540, y, "Subtotal")
-    y -= 15
-    c.line(40, y, width - 40, y)
-    y -= 10
+    c.drawString(60, y, "Descripción")
+    c.drawRightString(width - 260, y, "Cant.")
+    c.drawRightString(width - 190, y, "P. Base")
+    c.drawRightString(width - 120, y, "P. c/desc")
+    c.drawRightString(width - 60, y, "Subtotal")
+    y -= 8
+    c.line(60, y, width - 60, y)
+    y -= 14
 
-    c.setFont("Helvetica", 8)
+    c.setFont("Helvetica", 9)
 
-    total_desc = 0.0
     for it in items:
         desc = _pdf_text(it["descripcion"])
-        cant = it["cantidad"]
-        factor = (1 - e_desc / 100.0)
-        if factor <= 0:
-            factor = 1.0
+        cant = float(it["cantidad"] or 0)
+        p_base = float(it["precio_unit"] or 0)
+        p_desc = float(it["precio_final"] or 0) if it["precio_final"] is not None else round(p_base * factor, 2)
+        subtotal = round(p_desc * cant, 2)
 
-        total_desc = 0.0
-        for it in items:
-            desc = _pdf_text(it["descripcion"])
-            cant = it["cantidad"]
-
-            # En tu BD, precio_unit ES el precio final (editable) ya con descuento aplicado
-            p_final = float(it["precio_unit"] or 0)
-
-            # Reconstruimos "P. Base" solo para mostrarlo
-            p_base = p_final / factor
-
-            sub = cant * p_final
-            total_desc += sub
-
-            c.drawString(40, y, desc[:70])
-            c.drawRightString(390, y, f"{cant:g}")
-            c.drawRightString(455, y, f"{p_base:.2f}")     # P. Base (reconstruido)
-            c.drawRightString(525, y, f"{p_final:.2f}")    # P. c/desc (final real)
-            c.drawRightString(width - 40, y, f"{sub:.2f}")
-
-            y -= 12
-            if y < 80:
-                c.showPage()
-                y = height - 80
-                c.setFont("Helvetica", 9)
-
-        total_desc += sub
-
-        c.drawString(40, y, desc[:70])
-        c.drawRightString(390, y, f"{cant:g}")
-        c.drawRightString(455, y, f"{p_base:.2f}")
-        c.drawRightString(525, y, f"{p_desc:.2f}")
-        c.drawRightString(width - 40, y, f"{sub:.2f}")
-
-        y -= 12
-        if y < 80:
+        # Salto de página si se acaba el espacio
+        if y < 110:
             c.showPage()
             y = height - 80
-            c.setFont("Helvetica", 9)
 
+        c.drawString(60, y, desc[:70])
+        c.drawRightString(width - 260, y, f"{cant:g}")
+        c.drawRightString(width - 190, y, f"{p_base:.2f}")
+        c.drawRightString(width - 120, y, f"{p_desc:.2f}")
+        c.drawRightString(width - 60, y, f"{subtotal:.2f}")
+        y -= 14
+
+    # Total
     y -= 10
-    c.line(350, y, width - 40, y)
-    y -= 15
+    c.line(width - 260, y, width - 60, y)
+    y -= 18
     c.setFont("Helvetica-Bold", 11)
-    c.drawRightString(width - 40, y, f"TOTAL (con descuento): Bs {total_desc:.2f}")
+    c.drawRightString(width - 60, y, f"TOTAL (con descuento): Bs {total_desc:.2f}")
 
     c.showPage()
     c.save()
     buffer.seek(0)
 
+    # Marcar como facturado SOLO si corresponde (y guardar total_desc)
+    if marcar_facturado:
+        try:
+            cur.execute("UPDATE pedidos SET estado='facturado', total=%s, fecha_facturacion=NOW() WHERE id=%s", (total_desc, pedido_id))
+        except Exception:
+            conn.rollback()
+            cur.execute("UPDATE pedidos SET estado='facturado', total=%s WHERE id=%s", (total_desc, pedido_id))
+        conn.commit()
+        audit("PEDIDO_FACTURADO", "pedido", pedido_id, {"total": float(total_desc)})
+
+    conn.close()
+
     return send_file(
         buffer,
         as_attachment=False,
-        download_name=f"factura_{pedido_id}.pdf",
+        download_name=f"proforma_{pedido_id}.pdf",
         mimetype="application/pdf",
     )
+
 
 
 @app.route("/api/reporte_facturados")
