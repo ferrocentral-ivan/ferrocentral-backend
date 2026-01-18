@@ -2118,6 +2118,12 @@ def api_product_override(code):
         return jsonify({"ok": True, "override": dict(row)})
 
     # POST: crear / actualizar override
+
+        # Solo SUPER_ADMIN puede modificar overrides (ADMIN solo puede ver)
+    if (session.get("role") or "").upper() != "SUPER_ADMIN":
+        conn.close()
+        return jsonify({"ok": False, "error": "No autorizado"}), 403
+
     data = request.get_json() or {}
     oculto = True if data.get("oculto") else False
     imagen = (data.get("imagen") or "").strip() or None
