@@ -16,6 +16,8 @@ from urllib.request import urlopen
 from reportlab.lib.utils import ImageReader
 import textwrap
 from zoneinfo import ZoneInfo
+from reportlab.pdfbase import pdfmetrics
+
 
 
 
@@ -970,27 +972,102 @@ def proforma_pdf(pedido_id):
         print("WARN fecha/vigencia proforma:", e)
 
 
-    # Tabla
-    y -= 10
-    c.setLineWidth(1)
-    c.line(60, y, width - 60, y)
+
+    # =========================
+    # TABLA BONITA (GRID SUAVE)
+    # =========================
     y -= 14
 
-    c.setFont("Helvetica-Bold", 9)
-    c.drawString(60, y, "Descripción")
-    c.drawRightString(380, y, "Cant.")
-    c.drawRightString(455, y, "P. Base")
-    c.drawRightString(505, y, "P. c/desc")
-    c.drawRightString(width - 50, y, "Subtotal")
-    y -= 10
-    c.setLineWidth(0.5)
-    c.line(60, y, width - 60, y)
-    y -= 12
+    # Margenes tabla
+    x0 = 60
+    xR = width - 60
+
+    # Columnas (ajusta solo si quieres más/menos espacio)
+    # Descripción | Cant | P.Base | P.c/desc | Subtotal
+    col_desc = x0
+    col_cant = 380
+    col_pbase = 455
+    col_pdesc = 505
+    col_subt = xR
+
+    # Anchos reales en puntos
+    desc_w = col_cant - col_desc - 8  # padding
+    cant_w = col_pbase - col_cant
+    pbase_w = col_pdesc - col_pbase
+    pdesc_w = col_subt - col_pdesc
+    subt_w = xR - col_subt  # 0, solo referencia
+
+    # Estilo líneas
+    grid_color = colors.HexColor("#D9D9D9")   # gris claro elegante
+    header_fill = colors.HexColor("#F3F3F3")  # fondo suave
+
+    def wrap_by_width(text, font_name, font_size, max_width):
+        """Wrap por ancho real (puntos) para que nunca se salga."""
+        if not text:
+            return [""]
+        words = str(text).split()
+        lines = []
+        cur = ""
+        for w in words:
+            test = (cur + " " + w).strip()
+            if pdfmetrics.stringWidth(test, font_name, font_size) <= max_width:
+                cur = test
+            else:
+                if cur:
+                    lines.append(cur)
+                # palabra sola muy larga: cortarla por caracteres (fallback)
+                if pdfmetrics.stringWidth(w, font_name, font_size) <= max_width:
+                    cur = w
+                else:
+                    chunk = ""
+                    for ch in w:
+                        test2 = chunk + ch
+                        if pdfmetrics.stringWidth(test2, font_name, font_size) <= max_width:
+                            chunk = test2
+                        else:
+                            if chunk:
+                                lines.append(chunk)
+                            chunk = ch
+                    cur = chunk
+        if cur:
+            lines.append(cur)
+        return lines
+
+    def draw_table_header(y_top):
+        h = 18
+        # fondo
+        c.setFillColor(header_fill)
+        c.rect(x0, y_top - h, xR - x0, h, stroke=0, fill=1)
+        c.setFillColor(colors.black)
+
+        # borde suave
+        c.setStrokeColor(grid_color)
+        c.setLineWidth(0.6)
+        c.rect(x0, y_top - h, xR - x0, h, stroke=1, fill=0)
+
+        # separadores verticales
+        c.line(col_cant, y_top - h, col_cant, y_top)
+        c.line(col_pbase, y_top - h, col_pbase, y_top)
+        c.line(col_pdesc, y_top - h, col_pdesc, y_top)
+
+        # textos
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(col_desc + 4, y_top - 13, "Descripción")
+        c.drawCentredString((col_cant + col_pbase) / 2, y_top - 13, "Cant.")
+        c.drawCentredString((col_pbase + col_pdesc) / 2, y_top - 13, "P. Base")
+        c.drawCentredString((col_pdesc + col_subt) / 2, y_top - 13, "P. c/desc")
+        c.drawRightString(xR - 4, y_top - 13, "Subtotal")
+        return y_top - h
+
+    # dibujar header inicial
+    y = draw_table_header(y) - 2
 
     c.setFont("Helvetica", 8)
     total_desc = 0.0
     total_base = 0.0
 
+    line_h = 10  # altura por línea de texto
+    pad_y = 4    # padding vertical interno
 
     for it in items:
         desc = _pdf_text(it["descripcion"])
@@ -998,89 +1075,75 @@ def proforma_pdf(pedido_id):
         p_base = it["precio_unit"]
         p_desc = it["precio_final"] if it.get("precio_final") is not None else (p_base * (1 - e_desc / 100.0))
         sub = cant * p_desc
+
         total_desc += sub
         total_base += cant * p_base
 
+        # wrap descripción con ancho real
+        font_name = "Helvetica"
+        font_size = 8
+        lines = wrap_by_width(desc, font_name, font_size, desc_w)
+        n_lines = max(1, len(lines))
 
-        # --- WRAP de descripción sin pisar columnas ---
-        line_height = 12
+        # altura de fila dinámica
+        row_h = (n_lines * line_h) + (pad_y * 2)
 
-        # Ajusta el ancho por caracteres. (8pt suele rendir bien con 58-62 chars)
-        wrapped = textwrap.wrap(desc, width=62) or [""]
-
-        # Si la descripción es muy larga, puedes limitar líneas (opcional):
-        # if len(wrapped) > 4:
-        #     wrapped = wrapped[:4]
-        #     wrapped[-1] = wrapped[-1] + "..."
-
-        # 1) Imprime primera línea con columnas numéricas
-        c.drawString(60, y, wrapped[0])
-        c.drawRightString(380, y, f"{cant:g}")
-        c.drawRightString(455, y, f"{p_base:.2f}")
-        c.drawRightString(505, y, f"{p_desc:.2f}")
-        c.drawRightString(width - 50, y, f"{sub:.2f}")
-        y -= line_height
-
-        # 2) Imprime líneas restantes SOLO de descripción
-        for extra_line in wrapped[1:]:
-            # Si ya no hay espacio, saltar de página y continuar
-            if y < 100:
-                c.showPage()
-                _draw_proforma_header()
-
-                y = height - (header_h + 45)   # arranque bajo la franja roja
-                c.setFont("Helvetica", 8)
-
-                # (Opcional pero recomendado): redibujar encabezado de tabla en nueva página
-                c.setFont("Helvetica-Bold", 9)
-                c.drawString(60, y, "Descripción")
-                c.drawRightString(380, y, "Cant.")
-                c.drawRightString(455, y, "P. Base")
-                c.drawRightString(505, y, "P. c/desc")
-                c.drawRightString(width - 50, y, "Subtotal")
-                y -= 10
-                c.setLineWidth(0.5)
-                c.line(60, y, width - 60, y)
-                y -= 12
-                c.setFont("Helvetica", 8)
-
-            c.drawString(60, y, extra_line)
-            y -= line_height
-
-        # Separación extra entre productos (opcional)
-        # y -= 2
-
-        # Control de salto de página para el próximo ítem
-        if y < 100:
+        # salto de página si no entra la fila completa
+        if y - row_h < 90:
             c.showPage()
             _draw_proforma_header()
+
             y = height - (header_h + 45)
+            y = draw_table_header(y) - 2
             c.setFont("Helvetica", 8)
 
-            # (recomendado) repetir encabezado de tabla también aquí
-            c.setFont("Helvetica-Bold", 9)
-            c.drawString(60, y, "Descripción")
-            c.drawRightString(380, y, "Cant.")
-            c.drawRightString(455, y, "P. Base")
-            c.drawRightString(505, y, "P. c/desc")
-            c.drawRightString(width - 50, y, "Subtotal")
-            y -= 10
-            c.setLineWidth(0.5)
-            c.line(60, y, width - 60, y)
-            y -= 12
-            c.setFont("Helvetica", 8)
+        # dibujar rectángulo de la fila (grid suave)
+        c.setStrokeColor(grid_color)
+        c.setLineWidth(0.6)
+        c.rect(x0, y - row_h, xR - x0, row_h, stroke=1, fill=0)
+
+        # separadores verticales
+        c.line(col_cant, y - row_h, col_cant, y)
+        c.line(col_pbase, y - row_h, col_pbase, y)
+        c.line(col_pdesc, y - row_h, col_pdesc, y)
+
+        # texto descripción (multi-línea)
+        text_y = y - pad_y - 8  # primera línea
+        c.setFont(font_name, font_size)
+        for ln in lines:
+            c.drawString(col_desc + 4, text_y, ln)
+            text_y -= line_h
+
+        # números (centrados/derecha) alineados al centro vertical de la fila
+        mid_y = y - (row_h / 2) - 3
+
+        c.setFont("Helvetica", 8)
+        c.drawCentredString((col_cant + col_pbase) / 2, mid_y, f"{cant:g}")
+        c.drawRightString(col_pdesc - 6, mid_y, f"{p_base:.2f}")
+        c.drawRightString(col_subt - 6, mid_y, f"{p_desc:.2f}")
+        c.drawRightString(xR - 6, mid_y, f"{sub:.2f}")
+
+        # bajar y
+        y -= row_h
 
 
-
-    y -= 10
-    c.setLineWidth(1)
-    c.line(380, y, width - 60, y)
-    y -= 18
-
-    c.setFont("Helvetica-Bold", 11)
-    c.drawRightString(width - 60, y, f"TOTAL (sin descuento): Bs {total_base:.2f}")
     y -= 14
-    c.drawRightString(width - 60, y, f"TOTAL (con descuento): Bs {total_desc:.2f}")
+    box_x1 = 360
+    box_w = (width - 60) - box_x1
+    box_h = 40
+
+    c.setStrokeColor(colors.HexColor("#D9D9D9"))
+    c.setLineWidth(0.8)
+    c.setFillColor(colors.HexColor("#FAFAFA"))
+    c.rect(box_x1, y - box_h, box_w, box_h, stroke=1, fill=1)
+
+    c.setFillColor(colors.black)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawRightString(width - 66, y - 16, f"TOTAL (sin descuento): Bs {total_base:.2f}")
+    c.drawRightString(width - 66, y - 32, f"TOTAL (con descuento): Bs {total_desc:.2f}")
+
+    y -= (box_h + 8)
+
     c.save()
     buffer.seek(0)
 
@@ -2119,7 +2182,7 @@ def api_product_override(code):
 
     # POST: crear / actualizar override
 
-        # Solo SUPER_ADMIN puede modificar overrides (ADMIN solo puede ver)
+    # Solo SUPER_ADMIN puede modificar overrides (ADMIN solo puede ver)
     if (session.get("role") or "").upper() != "SUPER_ADMIN":
         conn.close()
         return jsonify({"ok": False, "error": "No autorizado"}), 403
