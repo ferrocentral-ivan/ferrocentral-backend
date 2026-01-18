@@ -1134,22 +1134,62 @@ def proforma_pdf(pedido_id):
         y -= row_h
 
 
-    y -= 14
-    box_x1 = col_pbase   # arranca la caja donde empieza la zona numérica
-    box_w  = xR - box_x1
-    box_h = 40
+        # =========================
+    # TOTALES (RECUADRO BONITO)
+    # =========================
+    y -= 16
 
-    c.setStrokeColor(colors.HexColor("#D9D9D9"))
+    box_h = 46
+    # Evitar que se corte en el borde inferior
+    if y - box_h < 90:
+        c.showPage()
+        _draw_proforma_header()
+        y = height - (header_h + 45)
+        y = draw_table_header(y) - 2
+        c.setFont("Helvetica", 8)
+        y -= 16
+
+    # Alineado con la tabla (misma zona numérica)
+    box_x = col_pbase
+    box_w = xR - box_x
+
+    red_bar = colors.HexColor("#e53935")   # mismo rojo del header
+    soft_bg = colors.HexColor("#fff5f5")   # fondo suave
+    grid    = colors.HexColor("#d9d9d9")
+
+    # Caja principal
+    c.setStrokeColor(grid)
     c.setLineWidth(0.8)
-    c.setFillColor(colors.HexColor("#FAFAFA"))
-    c.rect(box_x1, y - box_h, box_w, box_h, stroke=1, fill=1)
+    c.setFillColor(soft_bg)
+    c.rect(box_x, y - box_h, box_w, box_h, stroke=1, fill=1)
+
+    # Banda roja superior
+    bar_h = 14
+    c.setFillColor(red_bar)
+    c.rect(box_x, y - bar_h, box_w, bar_h, stroke=0, fill=1)
+
+    # Título banda
+    c.setFillColor(colors.white)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(box_x + 8, y - 11, "TOTALES")
+
+    # 2 filas
+    pad_x   = 8
+    right_x = xR - 8
+    line1_y = y - 26
+    line2_y = y - 40
 
     c.setFillColor(colors.black)
-    c.setFont("Helvetica-Bold", 11)
-    c.drawRightString(xR - 6, y - 16, f"TOTAL (sin descuento): Bs {total_base:.2f}")
-    c.drawRightString(xR - 6, y - 32, f"TOTAL (con descuento): Bs {total_desc:.2f}")
+    c.setFont("Helvetica", 9)
+    c.drawString(box_x + pad_x, line1_y, "Total (sin descuento):")
+    c.drawString(box_x + pad_x, line2_y, "Total (con descuento):")
 
-    y -= (box_h + 8)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawRightString(right_x, line1_y, f"Bs {total_base:.2f}")
+    c.drawRightString(right_x, line2_y, f"Bs {total_desc:.2f}")
+
+    y -= (box_h + 10)
+
 
     c.save()
     buffer.seek(0)
