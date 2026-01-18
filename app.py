@@ -1442,19 +1442,34 @@ def api_empresas():
 
     if role == "ADMIN":
         cur.execute("""
-            SELECT id, nit, razon_social, contacto, telefono, correo, direccion,
-                   COALESCE(descuento, 0) AS descuento
-            FROM empresas
-            WHERE admin_id = %s
+            SELECT e.id, e.nit, e.razon_social, e.contacto, e.telefono, e.correo, e.direccion,
+                   COALESCE(e.descuento, 0) AS descuento,
+                   COALESCE(v.total_vendido, 0) AS total_vendido
+            FROM empresas e
+            LEFT JOIN (
+                SELECT empresa_id, SUM(total) AS total_vendido
+                FROM pedidos
+                WHERE estado = 'facturado' AND admin_id = %s
+                GROUP BY empresa_id
+            ) v ON v.empresa_id = e.id
+            WHERE e.admin_id = %s
             ORDER BY razon_social ASC
-        """, (admin_id,))
+        """, (admin_id, admin_id))
     else:
         cur.execute("""
-            SELECT id, nit, razon_social, contacto, telefono, correo, direccion,
-                   COALESCE(descuento, 0) AS descuento
-            FROM empresas
-            ORDER BY razon_social ASC
+            SELECT e.id, e.nit, e.razon_social, e.contacto, e.telefono, e.correo, e.direccion,
+                COALESCE(e.descuento, 0) AS descuento,
+                COALESCE(v.total_vendido, 0) AS total_vendido
+            FROM empresas e
+            LEFT JOIN (
+                SELECT empresa_id, SUM(total) AS total_vendido
+                FROM pedidos
+                WHERE estado = 'facturado'
+                GROUP BY empresa_id
+            ) v ON v.empresa_id = e.id
+            ORDER BY e.razon_social ASC
         """)
+
 
     rows = cur.fetchall()
     conn.close()
