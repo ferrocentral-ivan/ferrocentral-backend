@@ -982,13 +982,15 @@ def proforma_pdf(pedido_id):
     x0 = 60
     xR = width - 60
 
-    # Columnas (ajusta solo si quieres más/menos espacio)
-    # Descripción | Cant | P.Base | P.c/desc | Subtotal
+    # Columnas: límites (x) para separar bien cada columna
+    # Descripción | Cant | P. Base | P. c/desc | Subtotal
     col_desc = x0
-    col_cant = 380
-    col_pbase = 455
-    col_pdesc = 505
-    col_subt = xR
+    col_cant = 370
+    col_pbase = 430
+    col_pdesc = 490
+    col_subt = 535          # <- INICIO de la columna "Subtotal"
+    # xR es el borde derecho final de la tabla
+
 
     # Anchos reales en puntos
     desc_w = col_cant - col_desc - 8  # padding
@@ -1046,9 +1048,10 @@ def proforma_pdf(pedido_id):
         c.rect(x0, y_top - h, xR - x0, h, stroke=1, fill=0)
 
         # separadores verticales
-        c.line(col_cant, y_top - h, col_cant, y_top)
+        c.line(col_cant,  y_top - h, col_cant,  y_top)
         c.line(col_pbase, y_top - h, col_pbase, y_top)
         c.line(col_pdesc, y_top - h, col_pdesc, y_top)
+        c.line(col_subt,  y_top - h, col_subt,  y_top)   # <- NUEVO (Subtotal)
 
         # textos
         c.setFont("Helvetica-Bold", 9)
@@ -1056,8 +1059,8 @@ def proforma_pdf(pedido_id):
         c.drawCentredString((col_cant + col_pbase) / 2, y_top - 13, "Cant.")
         c.drawCentredString((col_pbase + col_pdesc) / 2, y_top - 13, "P. Base")
         c.drawCentredString((col_pdesc + col_subt) / 2, y_top - 13, "P. c/desc")
-        c.drawRightString(xR - 4, y_top - 13, "Subtotal")
-        return y_top - h
+        c.drawCentredString((col_subt + xR) / 2, y_top - 13, "Subtotal")
+
 
     # dibujar header inicial
     y = draw_table_header(y) - 2
@@ -1103,9 +1106,11 @@ def proforma_pdf(pedido_id):
         c.rect(x0, y - row_h, xR - x0, row_h, stroke=1, fill=0)
 
         # separadores verticales
-        c.line(col_cant, y - row_h, col_cant, y)
+        c.line(col_cant,  y - row_h, col_cant,  y)
         c.line(col_pbase, y - row_h, col_pbase, y)
         c.line(col_pdesc, y - row_h, col_pdesc, y)
+        c.line(col_subt,  y - row_h, col_subt,  y)   
+
 
         # texto descripción (multi-línea)
         text_y = y - pad_y - 8  # primera línea
@@ -1119,16 +1124,16 @@ def proforma_pdf(pedido_id):
 
         c.setFont("Helvetica", 8)
         c.drawCentredString((col_cant + col_pbase) / 2, mid_y, f"{cant:g}")
-        c.drawRightString(col_pdesc - 6, mid_y, f"{p_base:.2f}")
-        c.drawRightString(col_subt - 6, mid_y, f"{p_desc:.2f}")
-        c.drawRightString(xR - 6, mid_y, f"{sub:.2f}")
+        c.drawRightString(col_pdesc - 6, mid_y, f"{p_base:.2f}")   # P. Base (termina en col_pdesc)
+        c.drawRightString(col_subt - 6, mid_y, f"{p_desc:.2f}")    # P. c/desc (termina en col_subt)
+        c.drawRightString(xR - 6, mid_y, f"{sub:.2f}")             # Subtotal (termina en xR)
 
         # bajar y
         y -= row_h
 
 
     y -= 14
-    box_x1 = 360
+    box_x1 = 330
     box_w = (width - 60) - box_x1
     box_h = 40
 
