@@ -984,11 +984,11 @@ def proforma_pdf(pedido_id):
 
     # Columnas: límites (x) para separar bien cada columna
     # Descripción | Cant | P. Base | P. c/desc | Subtotal
-    col_desc = x0
-    col_cant = 370
-    col_pbase = 430
-    col_pdesc = 490
-    col_subt = 535          # <- INICIO de la columna "Subtotal"
+    col_desc  = x0
+    col_cant  = 345
+    col_pbase = 405
+    col_pdesc = 470
+    col_subt  = 520 # <- INICIO de la columna "Subtotal"
     # xR es el borde derecho final de la tabla
 
 
@@ -1054,12 +1054,14 @@ def proforma_pdf(pedido_id):
         c.line(col_subt,  y_top - h, col_subt,  y_top)   # <- NUEVO (Subtotal)
 
         # textos
-        c.setFont("Helvetica-Bold", 9)
+        c.setFont("Helvetica-Bold", 8)
         c.drawString(col_desc + 4, y_top - 13, "Descripción")
         c.drawCentredString((col_cant + col_pbase) / 2, y_top - 13, "Cant.")
         c.drawCentredString((col_pbase + col_pdesc) / 2, y_top - 13, "P. Base")
         c.drawCentredString((col_pdesc + col_subt) / 2, y_top - 13, "P. c/desc")
         c.drawCentredString((col_subt + xR) / 2, y_top - 13, "Subtotal")
+
+        return y_top - h
 
 
     # dibujar header inicial
@@ -1133,8 +1135,8 @@ def proforma_pdf(pedido_id):
 
 
     y -= 14
-    box_x1 = 330
-    box_w = (width - 60) - box_x1
+    box_x1 = col_pbase   # arranca la caja donde empieza la zona numérica
+    box_w  = xR - box_x1
     box_h = 40
 
     c.setStrokeColor(colors.HexColor("#D9D9D9"))
@@ -1144,8 +1146,8 @@ def proforma_pdf(pedido_id):
 
     c.setFillColor(colors.black)
     c.setFont("Helvetica-Bold", 11)
-    c.drawRightString(width - 66, y - 16, f"TOTAL (sin descuento): Bs {total_base:.2f}")
-    c.drawRightString(width - 66, y - 32, f"TOTAL (con descuento): Bs {total_desc:.2f}")
+    c.drawRightString(xR - 6, y - 16, f"TOTAL (sin descuento): Bs {total_base:.2f}")
+    c.drawRightString(xR - 6, y - 32, f"TOTAL (con descuento): Bs {total_desc:.2f}")
 
     y -= (box_h + 8)
 
