@@ -239,22 +239,21 @@ def audit(action: str, entity: str, entity_id=None, payload=None):
 
 
 
-# ✅ Inicialización correcta (FUERA de la función)
-create_tables()
-bootstrap_super_admin()
-
-
-
-# --- MIGRACIÓN SEGURA: agregar precio_final si no existe ---
+# ✅ Inicialización (NO tumbar el servidor si la DB falla)
 try:
+    create_tables()
+    bootstrap_super_admin()
+
+    # --- MIGRACIÓN SEGURA: agregar precio_final si no existe ---
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("ALTER TABLE pedido_items ADD COLUMN IF NOT EXISTS precio_final DOUBLE PRECISION")
     conn.commit()
     conn.close()
-except Exception as e:
-    print("WARN: no se pudo asegurar columna precio_final:", e)
 
+except Exception as e:
+    # Importante: no crash del proceso (si no, Render reinicia en bucle)
+    print("DB INIT ERROR: la app arrancó sin inicializar DB:", e)
 
 
 # ---------------- RUTAS DE PÁGINAS ----------------
