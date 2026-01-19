@@ -5,7 +5,11 @@ from datetime import datetime, timedelta
 from io import BytesIO
 from backend.database import get_connection, create_tables
 from werkzeug.security import generate_password_hash, check_password_hash
-from actualizar_precios_openpyxl import actualizar_precios
+try:
+    from actualizar_precios_openpyxl import actualizar_precios
+except Exception as e:
+    actualizar_precios = None
+    print("WARN: actualizar_precios_openpyxl no disponible:", e)
 from werkzeug.utils import secure_filename
 import traceback
 from psycopg2.extras import RealDictCursor
@@ -2011,14 +2015,16 @@ def auth_login():
 
     # ---- LOGIN ADMIN ----
     if tipo == "admin":
-        conn = get_connection()
+        try:
+            conn = get_connection()
+        except Exception as e:
+            return jsonify({"ok": False, "error": "Servidor sin conexión a la base de datos"}), 503
+
         cur = conn.cursor()
         cur.execute("SELECT * FROM admins WHERE username = %s AND active = true", (usuario,))
-
         row = cur.fetchone()
-        
-
         conn.close()
+        ...
 
         if not row or not check_password_hash(row["password_hash"], password):
             return jsonify({"ok": False, "error": "Credenciales inválidas"}), 401
@@ -2037,11 +2043,19 @@ def auth_login():
     # ---- LOGIN EMPRESA ----
     password_hash = hashlib.sha256(password.encode()).hexdigest()
 
-    conn = get_connection()
+    try:
+        conn = get_connection()
+    except Exception:
+        return jsonify({
+            "ok": False,
+            "error": "Servidor sin conexión a la base de datos"
+        }), 503
+
     cur = conn.cursor()
     cur.execute("SELECT * FROM empresas WHERE correo = %s OR nit = %s", (usuario, usuario))
     row = cur.fetchone()
     conn.close()
+
 
     if not row:
         return jsonify({"ok": False, "error": "Empresa no encontrada"}), 404
@@ -2200,10 +2214,15 @@ def api_product_overrides_all():
 @app.route("/api/admin/actualizar-precios", methods=["POST"])
 @require_role("SUPER_ADMIN")
 def api_actualizar_precios():
-    # Ya NO pedimos descuento por JSON.
-    # El script lo lee del Excel (HOJA PEDIDO!G6)
-    r = actualizar_precios()   # <- sin descuento
+    if actualizar_precios is None:
+        return jsonify({
+            "ok": False,
+            "error": "Módulo actualizar_precios no disponible en el servidor"
+        }), 500
+
+    r = actualizar_precios()
     return jsonify(r), (200 if r.get("ok") else 400)
+
 
 
 
