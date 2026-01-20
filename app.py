@@ -21,6 +21,9 @@ from reportlab.lib.utils import ImageReader
 import textwrap
 from zoneinfo import ZoneInfo
 from reportlab.pdfbase import pdfmetrics
+import smtplib
+import ssl
+from email.message import EmailMessage
 
 
 
@@ -53,7 +56,8 @@ def append_pedido_json(pedido_obj: dict):
 
 
 
-BASE_URL = "https://ferrocentral.com.bo"  # en local puedes usar "http://127.0.0.1:5000"
+BASE_URL = os.environ.get("FRONTEND_BASE_URL", "https://ferrocentral.com.bo")
+  # en local puedes usar "http://127.0.0.1:5000"
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 
@@ -97,12 +101,65 @@ CORS(app, origins=[
 
 def send_reset_email(to_email, link):
     """
-    MVP: solo imprime el enlace en la consola.
-    Más adelante aquí configuramos el envío real por correo.
+    Envío real por SMTP (Render ENV).
+    Si falta configuración, hace fallback a print (no rompe nada).
     """
-    print("******** RESET PASSWORD ********")
-    print(f"Enviar este enlace a {to_email}: {link}")
-    print("********************************")
+    smtp_host = os.environ.get("SMTP_HOST", "").strip()
+    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+    smtp_user = os.environ.get("SMTP_USER", "").strip()
+    smtp_pass = os.environ.get("SMTP_PASS", "").strip()
+    smtp_from = os.environ.get("SMTP_FROM", smtp_user).strip()
+    smtp_tls = os.environ.get("SMTP_TLS", "1").strip()  # "1" o "0"
+
+    subject = "Restablecer contraseña - Ferrocentral"
+    body = f"""Hola,
+
+Se solicitó un restablecimiento de contraseña para tu cuenta empresa.
+
+Abre este enlace para crear una nueva contraseña (válido por 2 horas):
+{link}
+
+Si tú no solicitaste esto, puedes ignorar este correo.
+
+Atentamente,
+Ferrocentral
+"""
+
+    # Fallback seguro (no romper producción)
+    if not smtp_host or not smtp_user or not smtp_pass or not smtp_from:
+        print("WARN: SMTP no configurado. Link de reset:")
+        print(f"Enviar este enlace a {to_email}: {link}")
+        return
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = smtp_from
+    msg["To"] = to_email
+    msg.set_content(body)
+
+    try:
+        if smtp_port == 465:
+            # SSL directo
+            context = ssl.create_default_context()
+            with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context) as server:
+                server.login(smtp_user, smtp_pass)
+                server.send_message(msg)
+        else:
+            # STARTTLS típico (587)
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as server:
+                server.ehlo()
+                if smtp_tls in ("1", "true", "True", "YES", "yes"):
+                    server.starttls(context=ssl.create_default_context())
+                    server.ehlo()
+                server.login(smtp_user, smtp_pass)
+                server.send_message(msg)
+
+        print(f"SMTP OK: reset enviado a {to_email}")
+
+    except Exception as e:
+        # No romper flujo de usuario; solo loguear
+        print("ERROR SMTP:", e)
+        print("Link de reset (fallback):", link)
 
 
 
