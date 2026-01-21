@@ -2165,7 +2165,7 @@ def auth_login():
     return jsonify({
     "ok": True,
     "role": "EMPRESA",
-    "redirect": "/inicio.html",
+    "redirect": "/index.html",
     "empresa": {
         "id": row["id"],
         "correo": row["correo"],
