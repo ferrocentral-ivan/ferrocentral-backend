@@ -101,18 +101,13 @@ CORS(app, origins=[
 
 def send_reset_email(to_email, link):
     """
-    Envío real por SMTP (Render ENV).
-    Si falta configuración, hace fallback a print (no rompe nada).
+    Envío de reset por Resend API (recomendado) con fallback a SMTP si no hay API key.
     """
-    smtp_host = os.environ.get("SMTP_HOST", "").strip()
-    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
-    smtp_user = os.environ.get("SMTP_USER", "").strip()
-    smtp_pass = os.environ.get("SMTP_PASS", "").strip()
-    smtp_from = os.environ.get("SMTP_FROM", smtp_user).strip()
-    smtp_tls = os.environ.get("SMTP_TLS", "1").strip()  # "1" o "0"
+    resend_key = (os.environ.get("RESEND_API_KEY") or "").strip()
+    resend_from = (os.environ.get("RESEND_FROM") or "").strip()  # Ej: Ferrocentral <contacto@ferrocentral.com.bo>
 
     subject = "Restablecer contraseña - Ferrocentral"
-    body = f"""Hola,
+    body_text = f"""Hola,
 
 Se solicitó un restablecimiento de contraseña para tu cuenta empresa.
 
@@ -125,7 +120,68 @@ Atentamente,
 Ferrocentral
 """
 
-    # Fallback seguro (no romper producción)
+    body_html = f"""
+    <div style="font-family:Arial,sans-serif;line-height:1.5">
+      <p>Hola,</p>
+      <p>Se solicitó un restablecimiento de contraseña para tu cuenta empresa.</p>
+      <p>
+        <strong>Abre este enlace para crear una nueva contraseña</strong> (válido por 2 horas):<br>
+        <a href="{link}">{link}</a>
+      </p>
+      <p>Si tú no solicitaste esto, puedes ignorar este correo.</p>
+      <p>Atentamente,<br>Ferrocentral</p>
+    </div>
+    """
+
+    # =========================
+    # 1) RESEND (HTTPS) - RECOMENDADO
+    # =========================
+    if resend_key and resend_from:
+        try:
+            import json
+            from urllib.request import Request, urlopen
+
+            payload = {
+                "from": resend_from,
+                "to": [to_email],
+                "subject": subject,
+                "text": body_text,
+                "html": body_html,
+            }
+
+            req = Request(
+                "https://api.resend.com/emails",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {resend_key}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+
+            with urlopen(req, timeout=20) as resp:
+                status = getattr(resp, "status", 200)
+                resp_body = resp.read().decode("utf-8", errors="ignore")
+
+            if 200 <= status < 300:
+                print(f"RESEND OK: reset enviado a {to_email}")
+                return
+            else:
+                print("RESEND ERROR:", status, resp_body)
+
+        except Exception as e:
+            print("RESEND EXCEPTION:", e)
+
+    # =========================
+    # 2) FALLBACK SMTP (tu método actual)
+    # =========================
+    smtp_host = os.environ.get("SMTP_HOST", "").strip()
+    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+    smtp_user = os.environ.get("SMTP_USER", "").strip()
+    smtp_pass = os.environ.get("SMTP_PASS", "").strip()
+    smtp_from = os.environ.get("SMTP_FROM", smtp_user).strip()
+    smtp_tls = os.environ.get("SMTP_TLS", "1").strip()
+
     if not smtp_host or not smtp_user or not smtp_pass or not smtp_from:
         print("WARN: SMTP no configurado. Link de reset:")
         print(f"Enviar este enlace a {to_email}: {link}")
@@ -135,17 +191,15 @@ Ferrocentral
     msg["Subject"] = subject
     msg["From"] = smtp_from
     msg["To"] = to_email
-    msg.set_content(body)
+    msg.set_content(body_text)
 
     try:
         if smtp_port == 465:
-            # SSL directo
             context = ssl.create_default_context()
             with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context) as server:
                 server.login(smtp_user, smtp_pass)
                 server.send_message(msg)
         else:
-            # STARTTLS típico (587)
             with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as server:
                 server.ehlo()
                 if smtp_tls in ("1", "true", "True", "YES", "yes"):
@@ -157,10 +211,8 @@ Ferrocentral
         print(f"SMTP OK: reset enviado a {to_email}")
 
     except Exception as e:
-        # No romper flujo de usuario; solo loguear
         print("ERROR SMTP:", e)
         print("Link de reset (fallback):", link)
-
 
 
 BO_TZ = ZoneInfo("America/La_Paz")
