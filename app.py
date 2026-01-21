@@ -1817,7 +1817,7 @@ def api_productos_precios_json():
 
     resp = make_response(send_file(path, mimetype="application/json"))
     # importante: evitar caché para que veas cambios rápido
-    resp.headers["Cache-Control"] = "no-store, max-age=0"
+    resp.headers["Cache-Control"] = "public, max-age=600"  # 10 minutos
     return resp
 
 
