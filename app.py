@@ -101,88 +101,70 @@ CORS(app, origins=[
 
 def send_reset_email(to_email, link):
     """
-    Envío de reset por Resend API (recomendado) con fallback a SMTP si no hay API key.
+    Envío por RESEND (HTTPS) como primera opción (ideal en Render).
+    Si RESEND no está configurado, intenta SMTP.
+    Si SMTP falla o falta config, hace fallback a print (no rompe nada).
     """
-    resend_key = (os.environ.get("RESEND_API_KEY") or "").strip()
-    resend_from = (os.environ.get("RESEND_FROM") or "").strip()  # Ej: Ferrocentral <contacto@ferrocentral.com.bo>
-
     subject = "Restablecer contraseña - Ferrocentral"
     body_text = f"""Hola,
 
-Se solicitó un restablecimiento de contraseña para tu cuenta empresa.
+Se solicitó restablecer la contraseña de tu cuenta en Ferrocentral.
 
-Abre este enlace para crear una nueva contraseña (válido por 2 horas):
+Abre este enlace para crear una nueva contraseña:
 {link}
 
-Si tú no solicitaste esto, puedes ignorar este correo.
+Si tú no solicitaste este cambio, puedes ignorar este correo.
 
-Atentamente,
 Ferrocentral
 """
 
-    body_html = f"""
-    <div style="font-family:Arial,sans-serif;line-height:1.5">
-      <p>Hola,</p>
-      <p>Se solicitó un restablecimiento de contraseña para tu cuenta empresa.</p>
-      <p>
-        <strong>Abre este enlace para crear una nueva contraseña</strong> (válido por 2 horas):<br>
-        <a href="{link}">{link}</a>
-      </p>
-      <p>Si tú no solicitaste esto, puedes ignorar este correo.</p>
-      <p>Atentamente,<br>Ferrocentral</p>
-    </div>
-    """
+    # =========================================================
+    # 1) RESEND (HTTPS) - recomendado para Render
+    # =========================================================
+    resend_key = os.environ.get("RESEND_API_KEY", "").strip()
+    email_from = os.environ.get("EMAIL_FROM", "contacto@ferrocentral.com.bo").strip()
 
-    # =========================
-    # 1) RESEND (HTTPS) - RECOMENDADO
-    # =========================
-    if resend_key and resend_from:
+    if resend_key:
         try:
-            import json
-            from urllib.request import Request, urlopen
+            import requests
 
             payload = {
-                "from": resend_from,
+                "from": email_from,
                 "to": [to_email],
                 "subject": subject,
-                "text": body_text,
-                "html": body_html,
+                "text": body_text
             }
 
-            req = Request(
+            r = requests.post(
                 "https://api.resend.com/emails",
-                data=json.dumps(payload).encode("utf-8"),
                 headers={
                     "Authorization": f"Bearer {resend_key}",
-                    "Content-Type": "application/json",
+                    "Content-Type": "application/json"
                 },
-                method="POST",
+                json=payload,
+                timeout=15
             )
 
-            with urlopen(req, timeout=20) as resp:
-                status = getattr(resp, "status", 200)
-                resp_body = resp.read().decode("utf-8", errors="ignore")
-
-            if 200 <= status < 300:
-                print(f"RESEND OK: reset enviado a {to_email}")
+            if 200 <= r.status_code < 300:
+                print(f"INFO: RESEND ok -> enviado a {to_email}")
                 return
             else:
-                print("RESEND ERROR:", status, resp_body)
+                print(f"WARN: RESEND falló ({r.status_code}) -> {r.text}")
 
         except Exception as e:
-            print("RESEND EXCEPTION:", e)
+            print(f"ERROR: RESEND exception -> {e}")
 
-    # =========================
-    # 2) FALLBACK SMTP (tu método actual)
-    # =========================
+    # =========================================================
+    # 2) SMTP (backup)
+    # =========================================================
     smtp_host = os.environ.get("SMTP_HOST", "").strip()
     smtp_port = int(os.environ.get("SMTP_PORT", "587"))
     smtp_user = os.environ.get("SMTP_USER", "").strip()
     smtp_pass = os.environ.get("SMTP_PASS", "").strip()
     smtp_from = os.environ.get("SMTP_FROM", smtp_user).strip()
-    smtp_tls = os.environ.get("SMTP_TLS", "1").strip()
+    smtp_tls = os.environ.get("SMTP_TLS", "1").strip()  # "1" o "0"
 
-    if not smtp_host or not smtp_user or not smtp_pass or not smtp_from:
+    if not smtp_host or not smtp_user or not smtp_pass:
         print("WARN: SMTP no configurado. Link de reset:")
         print(f"Enviar este enlace a {to_email}: {link}")
         return
@@ -196,23 +178,24 @@ Ferrocentral
     try:
         if smtp_port == 465:
             context = ssl.create_default_context()
-            with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context) as server:
+            with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context, timeout=15) as server:
                 server.login(smtp_user, smtp_pass)
                 server.send_message(msg)
         else:
-            with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as server:
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as server:
                 server.ehlo()
-                if smtp_tls in ("1", "true", "True", "YES", "yes"):
+                if smtp_tls == "1":
                     server.starttls(context=ssl.create_default_context())
                     server.ehlo()
                 server.login(smtp_user, smtp_pass)
                 server.send_message(msg)
 
-        print(f"SMTP OK: reset enviado a {to_email}")
+        print(f"INFO: SMTP ok -> enviado a {to_email}")
 
     except Exception as e:
-        print("ERROR SMTP:", e)
+        print(f"ERROR: SMTP -> {e}")
         print("Link de reset (fallback):", link)
+
 
 
 BO_TZ = ZoneInfo("America/La_Paz")
