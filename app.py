@@ -2293,9 +2293,7 @@ def api_upload_excel_precios():
 
 
 @app.route("/api/product_overrides")
-@require_role("SUPER_ADMIN", "ADMIN")
 def api_product_overrides_all():
-
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("SELECT code, oculto, imagen FROM producto_overrides")
@@ -2320,7 +2318,6 @@ def api_actualizar_precios():
 
 
 @app.route("/api/product_overrides/<code>", methods=["GET", "POST"])
-@require_role("SUPER_ADMIN", "ADMIN")
 def api_product_override(code):
     code = str(code).strip()
     conn = get_connection()
@@ -2337,9 +2334,7 @@ def api_product_override(code):
             return jsonify({"ok": True, "override": None})
         return jsonify({"ok": True, "override": dict(row)})
 
-    # POST: crear / actualizar override
-
-    # Solo SUPER_ADMIN puede modificar overrides (ADMIN solo puede ver)
+    # POST: crear / actualizar override (SOLO SUPER_ADMIN)
     if (session.get("role") or "").upper() != "SUPER_ADMIN":
         conn.close()
         return jsonify({"ok": False, "error": "No autorizado"}), 403
