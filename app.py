@@ -2296,9 +2296,9 @@ def api_upload_excel_precios():
 def api_product_overrides_all():
     conn = get_connection()
     cur = conn.cursor()
+
     cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS destacado BOOLEAN DEFAULT FALSE")
     cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS orden INTEGER DEFAULT 0")
-    # ✅ NUEVO
     cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS promo_label TEXT")
     conn.commit()
 
@@ -2344,10 +2344,8 @@ def api_product_override(code):
     cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS promo_label TEXT")
     conn.commit()
 
-
     if request.method == "GET":
-        cur.execute(
-            """
+        cur.execute("""
             SELECT
                 code,
                 oculto,
@@ -2357,9 +2355,7 @@ def api_product_override(code):
                 promo_label
             FROM producto_overrides
             WHERE code = %s
-            """,
-    (code,)
-        )
+        """, (code,))
         row = cur.fetchone()
         conn.close()
         if not row:
@@ -2371,19 +2367,20 @@ def api_product_override(code):
         conn.close()
         return jsonify({"ok": False, "error": "No autorizado"}), 403
 
-    data = request.get_json() or {}
+    data = request.get_json(silent=True) or {}
+
     oculto = True if data.get("oculto") else False
     imagen = (data.get("imagen") or "").strip() or None
-
     destacado = True if data.get("destacado") else False
 
     try:
         orden = int(data.get("orden") or 0)
-    except:
+    except Exception:
         orden = 0
 
-        promo_label = (data.get("promo_label") or "").strip() or None
-
+    # ✅ promo_label SIEMPRE definido (evita 500 por variable no definida / payload)
+    promo_label = (data.get("promo_label") or "")
+    promo_label = promo_label.strip() or None
 
     cur.execute(
         """
@@ -2399,10 +2396,10 @@ def api_product_override(code):
         (code, oculto, imagen, destacado, orden, promo_label),
     )
 
-
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
+
 
 
 # ---------------- MAIN ----------------
