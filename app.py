@@ -2296,7 +2296,11 @@ def api_upload_excel_precios():
 def api_product_overrides_all():
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT code, oculto, imagen FROM producto_overrides")
+    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS destacado BOOLEAN DEFAULT FALSE")
+    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS orden INTEGER DEFAULT 0")
+    conn.commit()
+
+    cur.execute("SELECT code, oculto, imagen, COALESCE(destacado,false) AS destacado, COALESCE(orden,0) AS orden FROM producto_overrides")
     rows = [dict(r) for r in cur.fetchall()]
     conn.close()
     return jsonify({"ok": True, "overrides": rows})
@@ -2323,9 +2327,14 @@ def api_product_override(code):
     conn = get_connection()
     cur = conn.cursor()
 
+    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS destacado BOOLEAN DEFAULT FALSE")
+    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS orden INTEGER DEFAULT 0")
+    conn.commit()
+
+
     if request.method == "GET":
         cur.execute(
-            "SELECT code, oculto, imagen FROM producto_overrides WHERE code = %s",
+            "SELECT code, oculto, imagen, COALESCE(destacado,false) AS destacado, COALESCE(orden,0) AS orden FROM producto_overrides WHERE code = %s",
             (code,)
         )
         row = cur.fetchone()
@@ -2343,16 +2352,26 @@ def api_product_override(code):
     oculto = True if data.get("oculto") else False
     imagen = (data.get("imagen") or "").strip() or None
 
+    destacado = True if data.get("destacado") else False
+
+    try:
+        orden = int(data.get("orden") or 0)
+    except:
+        orden = 0
+
     cur.execute(
         """
-        INSERT INTO producto_overrides (code, oculto, imagen)
-        VALUES (%s, %s, %s)
+        INSERT INTO producto_overrides (code, oculto, imagen, destacado, orden)
+        VALUES (%s, %s, %s, %s, %s)
         ON CONFLICT(code) DO UPDATE SET
             oculto = excluded.oculto,
-            imagen = excluded.imagen
+            imagen = excluded.imagen,
+            destacado = excluded.destacado,
+            orden = excluded.orden
         """,
-        (code, oculto, imagen),
+        (code, oculto, imagen, destacado, orden),
     )
+
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
