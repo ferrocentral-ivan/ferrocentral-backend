@@ -2298,9 +2298,19 @@ def api_product_overrides_all():
     cur = conn.cursor()
     cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS destacado BOOLEAN DEFAULT FALSE")
     cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS orden INTEGER DEFAULT 0")
+    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS promo BOOLEAN DEFAULT FALSE")
+    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS promo_percent NUMERIC DEFAULT 0")
     conn.commit()
 
-    cur.execute("SELECT code, oculto, imagen, COALESCE(destacado,false) AS destacado, COALESCE(orden,0) AS orden FROM producto_overrides")
+    cur.execute("""
+        SELECT
+        code, oculto, imagen,
+        COALESCE(destacado,false) AS destacado,
+        COALESCE(orden,0) AS orden,
+        COALESCE(promo,false) AS promo,
+        COALESCE(promo_percent,0) AS promo_percent
+        FROM producto_overrides
+    """)
     rows = [dict(r) for r in cur.fetchall()]
     conn.close()
     return jsonify({"ok": True, "overrides": rows})
@@ -2329,12 +2339,14 @@ def api_product_override(code):
 
     cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS destacado BOOLEAN DEFAULT FALSE")
     cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS orden INTEGER DEFAULT 0")
+    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS promo BOOLEAN DEFAULT FALSE")
+    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS promo_percent NUMERIC DEFAULT 0")
     conn.commit()
 
 
     if request.method == "GET":
         cur.execute(
-            "SELECT code, oculto, imagen, COALESCE(destacado,false) AS destacado, COALESCE(orden,0) AS orden FROM producto_overrides WHERE code = %s",
+            "SELECT code, oculto, imagen, COALESCE(destacado,false) AS destacado, COALESCE(orden,0) AS orden, COALESCE(promo,false) AS promo, COALESCE(promo_percent,0) AS promo_percent FROM producto_overrides WHERE code = %s",
             (code,)
         )
         row = cur.fetchone()
@@ -2359,17 +2371,31 @@ def api_product_override(code):
     except:
         orden = 0
 
+    promo = True if data.get("promo") else False
+    try:
+        promo_percent = float(data.get("promo_percent") or 0)
+    except:
+        promo_percent = 0.0
+
+    # límites para evitar errores (0 a 90)
+    if promo_percent < 0:
+        promo_percent = 0.0
+    if promo_percent > 90:
+        promo_percent = 90.0
+
     cur.execute(
         """
-        INSERT INTO producto_overrides (code, oculto, imagen, destacado, orden)
-        VALUES (%s, %s, %s, %s, %s)
+        INSERT INTO producto_overrides (code, oculto, imagen, destacado, orden, promo, promo_percent)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT(code) DO UPDATE SET
             oculto = excluded.oculto,
             imagen = excluded.imagen,
             destacado = excluded.destacado,
-            orden = excluded.orden
+            orden = excluded.orden,
+            promo = excluded.promo,
+            promo_percent = excluded.promo_percent
         """,
-        (code, oculto, imagen, destacado, orden),
+        (code, oculto, imagen, destacado, orden, promo, promo_percent),
     )
 
     conn.commit()
