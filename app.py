@@ -2289,6 +2289,25 @@ def api_upload_excel_precios():
         "path": final_path
     })
 
+def ensure_producto_overrides_schema(cur):
+    """
+    Asegura que exista la tabla producto_overrides y que tenga
+    columnas para destacado/orden/promo sin romper lo existente.
+    """
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS producto_overrides (
+            code TEXT PRIMARY KEY,
+            oculto BOOLEAN DEFAULT FALSE,
+            imagen TEXT
+        )
+    """)
+
+    # Columnas nuevas (no afecta precios)
+    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS destacado BOOLEAN DEFAULT FALSE")
+    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS orden INTEGER")
+    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS promo BOOLEAN DEFAULT FALSE")
+    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS promo_percent INTEGER")
+
 
 
 
@@ -2302,15 +2321,9 @@ def api_product_overrides_all():
     cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS promo_percent NUMERIC DEFAULT 0")
     conn.commit()
 
-    cur.execute("""
-        SELECT
-        code, oculto, imagen,
-        COALESCE(destacado,false) AS destacado,
-        COALESCE(orden,0) AS orden,
-        COALESCE(promo,false) AS promo,
-        COALESCE(promo_percent,0) AS promo_percent
-        FROM producto_overrides
-    """)
+    ensure_producto_overrides_schema(cur)
+    cur.execute("SELECT code, oculto, imagen, destacado, orden, promo, promo_percent FROM producto_overrides")
+
     rows = [dict(r) for r in cur.fetchall()]
     conn.close()
     return jsonify({"ok": True, "overrides": rows})
@@ -2345,8 +2358,9 @@ def api_product_override(code):
 
 
     if request.method == "GET":
+        ensure_producto_overrides_schema(cur)
         cur.execute(
-            "SELECT code, oculto, imagen, COALESCE(destacado,false) AS destacado, COALESCE(orden,0) AS orden, COALESCE(promo,false) AS promo, COALESCE(promo_percent,0) AS promo_percent FROM producto_overrides WHERE code = %s",
+            "SELECT code, oculto, imagen, destacado, orden, promo, promo_percent FROM producto_overrides WHERE code = %s",
             (code,)
         )
         row = cur.fetchone()
@@ -2363,6 +2377,20 @@ def api_product_override(code):
     data = request.get_json() or {}
     oculto = True if data.get("oculto") else False
     imagen = (data.get("imagen") or "").strip() or None
+
+    destacado = True if data.get("destacado") else False
+    orden = data.get("orden")
+    try:
+        orden = int(orden) if orden not in (None, "", "null") else None
+    except:
+        orden = None
+
+    promo = True if data.get("promo") else False
+    promo_percent = data.get("promo_percent")
+    try:
+        promo_percent = int(promo_percent) if promo_percent not in (None, "", "null") else None
+    except:
+        promo_percent = None
 
     destacado = True if data.get("destacado") else False
 
@@ -2382,6 +2410,8 @@ def api_product_override(code):
         promo_percent = 0.0
     if promo_percent > 90:
         promo_percent = 90.0
+
+    ensure_producto_overrides_schema(cur)
 
     cur.execute(
         """
