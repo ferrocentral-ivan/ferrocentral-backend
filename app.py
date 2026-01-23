@@ -2296,28 +2296,14 @@ def api_upload_excel_precios():
 def api_product_overrides_all():
     conn = get_connection()
     cur = conn.cursor()
-
     cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS destacado BOOLEAN DEFAULT FALSE")
     cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS orden INTEGER DEFAULT 0")
     conn.commit()
 
-    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS promo_label TEXT DEFAULT ''")
-    conn.commit()
-
-    cur.execute("""
-        SELECT
-        code,
-        oculto,
-        imagen,
-        COALESCE(destacado,false) AS destacado,
-        COALESCE(orden,0) AS orden,
-        COALESCE(promo_label,'') AS promo_label
-        FROM producto_overrides
-    """)
+    cur.execute("SELECT code, oculto, imagen, COALESCE(destacado,false) AS destacado, COALESCE(orden,0) AS orden FROM producto_overrides")
     rows = [dict(r) for r in cur.fetchall()]
     conn.close()
     return jsonify({"ok": True, "overrides": rows})
-
 
 @app.route("/api/admin/actualizar-precios", methods=["POST"])
 @require_role("SUPER_ADMIN")
@@ -2343,22 +2329,12 @@ def api_product_override(code):
 
     cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS destacado BOOLEAN DEFAULT FALSE")
     cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS orden INTEGER DEFAULT 0")
-    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS promo_label TEXT DEFAULT ''")
     conn.commit()
+
 
     if request.method == "GET":
         cur.execute(
-            """
-            SELECT
-            code,
-            oculto,
-            imagen,
-            COALESCE(destacado,false) AS destacado,
-            COALESCE(orden,0) AS orden,
-            COALESCE(promo_label,'') AS promo_label
-            FROM producto_overrides
-            WHERE code = %s
-            """,
+            "SELECT code, oculto, imagen, COALESCE(destacado,false) AS destacado, COALESCE(orden,0) AS orden FROM producto_overrides WHERE code = %s",
             (code,)
         )
         row = cur.fetchone()
@@ -2372,41 +2348,33 @@ def api_product_override(code):
         conn.close()
         return jsonify({"ok": False, "error": "No autorizado"}), 403
 
-    data = request.get_json(silent=True) or {}
-
+    data = request.get_json() or {}
     oculto = True if data.get("oculto") else False
     imagen = (data.get("imagen") or "").strip() or None
+
     destacado = True if data.get("destacado") else False
 
     try:
         orden = int(data.get("orden") or 0)
-    except Exception:
+    except:
         orden = 0
-
-    # ✅ promo_label SIEMPRE definido (evita 500 por variable no definida / payload)
-    promo_label = (data.get("promo_label") or "").strip()
-    if not data.get("promo"):
-        promo_label = ""
-    promo_label = promo_label.strip() or None
 
     cur.execute(
         """
-        INSERT INTO producto_overrides (code, oculto, imagen, destacado, orden, promo_label)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        INSERT INTO producto_overrides (code, oculto, imagen, destacado, orden)
+        VALUES (%s, %s, %s, %s, %s)
         ON CONFLICT(code) DO UPDATE SET
             oculto = excluded.oculto,
             imagen = excluded.imagen,
             destacado = excluded.destacado,
-            orden = excluded.orden,
-            promo_label = excluded.promo_label
+            orden = excluded.orden
         """,
-        (code, oculto, imagen, destacado, orden, promo_label),
+        (code, oculto, imagen, destacado, orden),
     )
 
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
-
 
 
 # ---------------- MAIN ----------------
