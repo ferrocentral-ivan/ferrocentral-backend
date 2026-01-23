@@ -2299,17 +2299,19 @@ def api_product_overrides_all():
 
     cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS destacado BOOLEAN DEFAULT FALSE")
     cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS orden INTEGER DEFAULT 0")
-    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS promo_label TEXT")
+    conn.commit()
+
+    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS promo_label TEXT DEFAULT ''")
     conn.commit()
 
     cur.execute("""
         SELECT
-            code,
-            oculto,
-            imagen,
-            COALESCE(destacado,false) AS destacado,
-            COALESCE(orden,0) AS orden,
-            promo_label
+        code,
+        oculto,
+        imagen,
+        COALESCE(destacado,false) AS destacado,
+        COALESCE(orden,0) AS orden,
+        COALESCE(promo_label,'') AS promo_label
         FROM producto_overrides
     """)
     rows = [dict(r) for r in cur.fetchall()]
@@ -2341,21 +2343,24 @@ def api_product_override(code):
 
     cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS destacado BOOLEAN DEFAULT FALSE")
     cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS orden INTEGER DEFAULT 0")
-    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS promo_label TEXT")
+    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS promo_label TEXT DEFAULT ''")
     conn.commit()
 
     if request.method == "GET":
-        cur.execute("""
+        cur.execute(
+            """
             SELECT
-                code,
-                oculto,
-                imagen,
-                COALESCE(destacado,false) AS destacado,
-                COALESCE(orden,0) AS orden,
-                promo_label
+            code,
+            oculto,
+            imagen,
+            COALESCE(destacado,false) AS destacado,
+            COALESCE(orden,0) AS orden,
+            COALESCE(promo_label,'') AS promo_label
             FROM producto_overrides
             WHERE code = %s
-        """, (code,))
+            """,
+            (code,)
+        )
         row = cur.fetchone()
         conn.close()
         if not row:
@@ -2379,7 +2384,9 @@ def api_product_override(code):
         orden = 0
 
     # ✅ promo_label SIEMPRE definido (evita 500 por variable no definida / payload)
-    promo_label = (data.get("promo_label") or "")
+    promo_label = (data.get("promo_label") or "").strip()
+    if not data.get("promo"):
+        promo_label = ""
     promo_label = promo_label.strip() or None
 
     cur.execute(
