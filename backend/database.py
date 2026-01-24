@@ -95,13 +95,7 @@ def create_tables():
         imagen TEXT
     );
     """)
-
-    # Columnas nuevas para DESTACADO / PROMO (no afecta precios ni tablas existentes)
-    _try(cur, "ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS destacado BOOLEAN NOT NULL DEFAULT FALSE;")
-    _try(cur, "ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS orden INTEGER NOT NULL DEFAULT 0;")
-    _try(cur, "ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS promo BOOLEAN NOT NULL DEFAULT FALSE;")
-    _try(cur, "ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS promo_percent INTEGER NOT NULL DEFAULT 0;")
-
+    
 
 
     # ===== AUDIT LOG =====

@@ -2289,59 +2289,21 @@ def api_upload_excel_precios():
         "path": final_path
     })
 
-def ensure_producto_overrides_schema(cur):
-    """
-    Asegura que exista la tabla producto_overrides y que tenga
-    columnas para destacado/orden/promo sin romper lo existente.
-    """
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS producto_overrides (
-            code TEXT PRIMARY KEY,
-            oculto BOOLEAN DEFAULT FALSE,
-            imagen TEXT
-        )
-    """)
-
-    # Columnas nuevas (no afecta precios)
-    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS destacado BOOLEAN DEFAULT FALSE")
-    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS orden INTEGER")
-    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS promo BOOLEAN DEFAULT FALSE")
-    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS promo_percent INTEGER")
-
 
 
 
 @app.route("/api/product_overrides")
 def api_product_overrides_all():
-    """
-    Overrides de producto (oculto/imagen + destacado/orden + promo/%).
-    Usado por la tienda (GET) y por el panel (GET para precargar).
-    """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT code, oculto, imagen, destacado, orden, promo, promo_percent
-        FROM producto_overrides
-        """
-    )
-    overrides = []
-    for r in cur.fetchall():
-        if isinstance(r, dict):
-            overrides.append(r)
-        else:
-            overrides.append({
-                "code": r[0],
-                "oculto": bool(r[1]),
-                "imagen": r[2],
-                "destacado": bool(r[3]),
-                "orden": int(r[4] or 0),
-                "promo": bool(r[5]),
-                "promo_percent": int(r[6] or 0),
-            })
-    conn.close()
-    return jsonify({"ok": True, "overrides": overrides})
+    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS destacado BOOLEAN DEFAULT FALSE")
+    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS orden INTEGER DEFAULT 0")
+    conn.commit()
 
+    cur.execute("SELECT code, oculto, imagen, COALESCE(destacado,false) AS destacado, COALESCE(orden,0) AS orden FROM producto_overrides")
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    return jsonify({"ok": True, "overrides": rows})
 
 @app.route("/api/admin/actualizar-precios", methods=["POST"])
 @require_role("SUPER_ADMIN")
@@ -2358,41 +2320,28 @@ def api_actualizar_precios():
 
 
 
+
 @app.route("/api/product_overrides/<code>", methods=["GET", "POST"])
 def api_product_override(code):
     code = str(code).strip()
     conn = get_connection()
     cur = conn.cursor()
 
+    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS destacado BOOLEAN DEFAULT FALSE")
+    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS orden INTEGER DEFAULT 0")
+    conn.commit()
+
+
     if request.method == "GET":
         cur.execute(
-            """
-            SELECT code, oculto, imagen, destacado, orden, promo, promo_percent
-            FROM producto_overrides
-            WHERE code = %s
-            """,
-            (code,),
+            "SELECT code, oculto, imagen, COALESCE(destacado,false) AS destacado, COALESCE(orden,0) AS orden FROM producto_overrides WHERE code = %s",
+            (code,)
         )
         row = cur.fetchone()
         conn.close()
         if not row:
             return jsonify({"ok": True, "override": None})
-
-        if isinstance(row, dict):
-            return jsonify({"ok": True, "override": row})
-
-        return jsonify({
-            "ok": True,
-            "override": {
-                "code": row[0],
-                "oculto": bool(row[1]),
-                "imagen": row[2],
-                "destacado": bool(row[3]),
-                "orden": int(row[4] or 0),
-                "promo": bool(row[5]),
-                "promo_percent": int(row[6] or 0),
-            }
-        })
+        return jsonify({"ok": True, "override": dict(row)})
 
     # POST: crear / actualizar override (SOLO SUPER_ADMIN)
     if (session.get("role") or "").upper() != "SUPER_ADMIN":
@@ -2404,33 +2353,28 @@ def api_product_override(code):
     imagen = (data.get("imagen") or "").strip() or None
 
     destacado = True if data.get("destacado") else False
-    orden = int(data.get("orden") or 0)
 
-    promo = True if data.get("promo") else False
-    promo_percent = int(data.get("promo_percent") or 0)
-    if promo_percent < 0:
-        promo_percent = 0
-    if promo_percent > 95:
-        promo_percent = 95
+    try:
+        orden = int(data.get("orden") or 0)
+    except:
+        orden = 0
 
     cur.execute(
         """
-        INSERT INTO producto_overrides (code, oculto, imagen, destacado, orden, promo, promo_percent)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO producto_overrides (code, oculto, imagen, destacado, orden)
+        VALUES (%s, %s, %s, %s, %s)
         ON CONFLICT(code) DO UPDATE SET
             oculto = excluded.oculto,
             imagen = excluded.imagen,
             destacado = excluded.destacado,
-            orden = excluded.orden,
-            promo = excluded.promo,
-            promo_percent = excluded.promo_percent
+            orden = excluded.orden
         """,
-        (code, oculto, imagen, destacado, orden, promo, promo_percent),
+        (code, oculto, imagen, destacado, orden),
     )
+
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
-
 
 
 # ---------------- MAIN ----------------
