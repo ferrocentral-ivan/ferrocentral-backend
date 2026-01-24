@@ -2325,14 +2325,21 @@ def api_actualizar_precios():
 
     r = actualizar_precios()
 
-    # Compatibilidad para el panel (evita "undefined")
+    # Compatibilidad con el panel (evita "undefined")
     if isinstance(r, dict):
+        # Nombres nuevos (del script)
+        # actualizados, creados_nuevos, filas_excel_validas, descuento_proveedor, en_json_no_en_excel
         r.setdefault("updated", r.get("actualizados"))
         r.setdefault("missing", r.get("en_json_no_en_excel"))
         r.setdefault("rows", r.get("filas_excel_validas"))
         r.setdefault("discount", r.get("descuento_proveedor"))
 
+        # Si tu admin.html usa estos nombres en español, también los dejamos
+        r.setdefault("filas_excel", r.get("filas_excel_validas"))
+        r.setdefault("descuento", r.get("descuento_proveedor"))
+
     return jsonify(r), (200 if r.get("ok") else 400)
+
 
 
 
