@@ -140,39 +140,48 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
     filas_excel = 0
 
     for r in ws.iter_rows(min_row=3, values_only=True):
-        # Layout (según tu Excel):
-        # A productCode, B code, C co, F location, G description, H usd_unit, I package, J brand, L warehouse
-        productCode = r[0]
-        codigo = r[1]
-        co = r[2]
-        location = r[5]
-        description = r[6]
-        usd_unit = r[7]
-        package = r[8]
-        brand = r[9]
-        warehouse = r[11]
+        # Layout real de tu Excel (captura):
+        # A UBICACIÓN, B CO, C CODIGO, D CANT, E DESCRIPCION,
+        # F PRECIO U. (USD), G P.D/S (USD docena), H PRECIO BS (Bs)
+        ubicacion = r[0]
+        co = r[1]
+        codigo = r[2]
+        descripcion = r[4]
+        usd_unit = r[5]
+        usd_docena = r[6]
+        bs_price = r[7]
 
         if codigo is None:
             continue
 
-        code = str(codigo).strip().replace(".0", "")
-        usd = to_float(usd_unit)
-        if not code or usd is None:
+        code_raw = str(codigo).strip()
+        if code_raw.endswith(".0"):
+            code_raw = code_raw[:-2]
+        code = code_raw
+
+        if not code:
+            continue
+
+        bs = to_float(bs_price)
+        usd_u = to_float(usd_unit)
+        usd_d = to_float(usd_docena)
+
+        # Necesitamos al menos Bs o USD unitario (por fallback)
+        if bs is None and usd_u is None:
             continue
 
         filas_excel += 1
 
         excel_by_code[code] = {
             "code": code,
-            "productCode": str(productCode).strip() if productCode else None,
             "co": str(co).strip() if co else None,
-            "location": str(location).strip() if location is not None else None,
-            "warehouse": str(warehouse).strip() if warehouse else None,
-            "description": str(description).strip() if description else "",
-            "usd_price_unit": usd,
-            "package": str(package).strip() if package else None,
-            "brand": str(brand).strip().lower() if brand else None,
+            "location": str(ubicacion).strip() if ubicacion is not None else None,
+            "description": str(descripcion).strip() if descripcion else "",
+            "usd_price_unit": usd_u,
+            "usd_price_docena": usd_d,
+            "bs_price_proveedor": bs,  # ESTA ES LA CLAVE
         }
+
 
     # 4) Cargar JSON base y mapear por code
     with open(json_in_path, "r", encoding="utf-8") as f:
@@ -190,42 +199,46 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
 
     # 5) Actualizar o crear
     for code, info in excel_by_code.items():
-        precio_usd = info["usd_price_unit"]
-        precio_lista_bs = precio_usd * TIPO_CAMBIO
-        costo_bs = precio_lista_bs * (1.0 - float(descuento_proveedor))
+        usd_u = info.get("usd_price_unit")
+        usd_d = info.get("usd_price_docena")
+        bs_lista = info.get("bs_price_proveedor")
+
+        # 1) Base Bs proveedor: preferimos SIEMPRE columna H
+        #    Si viene vacío, recién usamos USD*TIPO_CAMBIO como respaldo.
+        if bs_lista is None:
+            bs_lista = (usd_u * TIPO_CAMBIO) if usd_u is not None else 0.0
+
+        # 2) Costo con descuento proveedor (G6)
+        costo_bs = bs_lista * (1.0 - float(descuento_proveedor))
+
+        # 3) Margen y precio final web
         margen = _calc_margen(costo_bs)
         precio_web_bs = round(costo_bs * (1.0 + margen), 2)
+
 
         if code in by_code:
             p = by_code[code]
 
             # Actualiza SOLO lo necesario para precios (no rompemos promo, etc.)
-            p["usd_price_unit"] = precio_usd
-            # si tienes docena/web históricos, no los destruyo; si no existe, seteo unit
-            if p.get("usd_price_docena") is None:
-                p["usd_price_docena"] = precio_usd
-            if p.get("usd_price_web") is None:
-                p["usd_price_web"] = precio_usd
-
+            p["usd_price_unit"] = usd_u
+            p["usd_price_docena"] = usd_d
+            p["usd_price_web"] = usd_u if usd_u is not None else 0.0
+            p["bs_price_proveedor"] = round(bs_lista, 2)
             p["bs_price_descuento25"] = round(costo_bs, 2)
             p["bs_price_web"] = precio_web_bs
             p["proveedor_descuento"] = float(descuento_proveedor)
 
+
             # Completar metadata SOLO si está vacío (para no pisar cambios manuales)
             if not (p.get("description") or "").strip():
                 p["description"] = info["description"]
-            if not (p.get("brand") or "").strip() and info.get("brand"):
-                p["brand"] = info["brand"]
-            if not (p.get("productCode") or "").strip() and info.get("productCode"):
-                p["productCode"] = info["productCode"]
             if not (p.get("co") or "").strip() and info.get("co"):
                 p["co"] = info["co"]
             if not (p.get("location") or "").strip() and info.get("location"):
                 p["location"] = info["location"]
-            if not (p.get("warehouse") or "").strip() and info.get("warehouse"):
-                p["warehouse"] = info["warehouse"]
             if not (p.get("mode_of_sale") or "").strip():
                 p["mode_of_sale"] = ""
+
 
             # sale_label: si ya existe lo mantengo; si no, lo creo simple
             if not (p.get("sale_label") or "").strip():
@@ -243,17 +256,20 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
             # Crear producto nuevo con el MISMO schema que tu catálogo
             nuevo = {
                 "code": code,
-                "productCode": info.get("productCode") or f"{(info.get('co') or '').upper()}{code}",
+                "productCode": f"{(info.get('co') or '').upper()}{code}",  # estable, no depende del Excel
                 "co": (info.get("co") or "").upper() if info.get("co") else "",
-                "brand": info.get("brand") or "",
+                "brand": "",  # no viene del Excel de esta hoja
                 "description": info.get("description") or "",
                 "location": info.get("location") or "",
-                "warehouse": info.get("warehouse") or "",
-                "usd_price_unit": precio_usd,
-                "usd_price_docena": precio_usd,
-                "usd_price_web": precio_usd,
+                "warehouse": "",  # no viene del Excel de esta hoja
+
+                "usd_price_unit": usd_u,
+                "usd_price_docena": usd_d,
+                "usd_price_web": usd_u if usd_u is not None else 0.0,
+                "bs_price_proveedor": round(bs_lista, 2),
                 "bs_price_descuento25": round(costo_bs, 2),
                 "bs_price_web": precio_web_bs,
+
                 "has_promo": False,
                 "promo_percent": None,
                 "promo_price_bs": None,
@@ -263,6 +279,7 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
                 "estrella_score": 0,
                 "proveedor_descuento": float(descuento_proveedor),
             }
+
 
             productos.append(nuevo)
             by_code[code] = nuevo
