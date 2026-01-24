@@ -2268,19 +2268,28 @@ def api_upload_excel_precios():
 
     # 3) guardar en el mismo directorio del app.py (BASE_DIR)
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    tmp_path = os.path.join(base_dir, f"proveedor_upload_tmp{ext}")
-    final_path = os.path.join(base_dir, f"proveedor{ext}")
+    # Guardar SIEMPRE con nombre fijo para evitar que se use un Excel viejo
+    tmp_path = os.path.join(base_dir, "proveedor_upload_tmp.xlsm")
+    final_path = os.path.join(base_dir, "proveedor.xlsm")
 
     try:
-        # Guardado "atómico": primero tmp, luego replace
         f.save(tmp_path)
         os.replace(tmp_path, final_path)
+
+        # Limpiar posibles archivos viejos que confunden al sistema
+        old_xlsx = os.path.join(base_dir, "proveedor.xlsx")
+        if os.path.exists(old_xlsx):
+            try:
+                os.remove(old_xlsx)
+            except Exception:
+                pass
+
     except Exception as e:
         return jsonify({"ok": False, "error": f"No se pudo guardar Excel: {e}"}), 500
 
-    # 4) setear variable de entorno en runtime (para que actualizar_precios lo use)
-    # Nota: esto funciona para el proceso actual; en deploys/restarts usarás el default proveedor.xlsx
-    os.environ["EXCEL_FILE"] = os.path.basename(final_path)
+    # Forzar que el script siempre use este Excel
+    os.environ["EXCEL_FILE"] = "proveedor.xlsm"
+
 
     audit("EXCEL_SUBIDO", "sistema", None, {"filename": os.path.basename(final_path)})
     return jsonify({
@@ -2315,7 +2324,16 @@ def api_actualizar_precios():
         }), 500
 
     r = actualizar_precios()
+
+    # Compatibilidad para el panel (evita "undefined")
+    if isinstance(r, dict):
+        r.setdefault("updated", r.get("actualizados"))
+        r.setdefault("missing", r.get("en_json_no_en_excel"))
+        r.setdefault("rows", r.get("filas_excel_validas"))
+        r.setdefault("discount", r.get("descuento_proveedor"))
+
     return jsonify(r), (200 if r.get("ok") else 400)
+
 
 
 
