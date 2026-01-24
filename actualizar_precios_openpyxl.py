@@ -210,6 +210,8 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
     updated = 0
     created = 0
     missing_in_excel = 0
+    nuevos_codigos = []
+
 
     # 5) Actualizar o crear
     for code, info in excel_by_code.items():
@@ -232,6 +234,8 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
 
         if code in by_code:
             p = by_code[code]
+            updated += 1
+
 
             # Actualiza SOLO lo necesario para precios (no rompemos promo, etc.)
             p["usd_price_unit"] = usd_u
@@ -298,6 +302,8 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
             productos.append(nuevo)
             by_code[code] = nuevo
             created += 1
+            nuevos_codigos.append(code)
+
 
     # 6) Contar los que están en JSON pero no vinieron en el Excel (info útil)
     for p in productos:
@@ -312,9 +318,21 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
     return {
         "ok": True,
         "excel": os.path.basename(excel_path),
+
+        # nombres “nuevos” (claros)
         "filas_excel_validas": filas_excel,
         "actualizados": updated,
         "creados_nuevos": created,
         "en_json_no_en_excel": missing_in_excel,
         "descuento_proveedor": float(descuento_proveedor),
+
+        # alias para que tu admin NO muestre undefined aunque esté esperando otros nombres
+        "filas_excel": filas_excel,
+        "missing": missing_in_excel,
+        "descuento": float(descuento_proveedor),
+
+        # NUEVO: resumen de productos nuevos detectados
+        "nuevos": created,
+        "nuevos_codigos": nuevos_codigos[:200],  # limita para no mandar 7000 códigos si un día pasa algo raro
     }
+
