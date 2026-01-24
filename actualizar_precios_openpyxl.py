@@ -140,16 +140,26 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
     filas_excel = 0
 
     for r in ws.iter_rows(min_row=3, values_only=True):
-        # Layout real de tu Excel (captura):
-        # A UBICACIÓN, B CO, C CODIGO, D CANT, E DESCRIPCION,
-        # F PRECIO U. (USD), G P.D/S (USD docena), H PRECIO BS (Bs)
-        ubicacion = r[0]
-        co = r[1]
-        codigo = r[2]
-        descripcion = r[4]
-        usd_unit = r[5]
-        usd_docena = r[6]
-        bs_price = r[7]
+        # ESTRUCTURA REAL de tu "NUEVA LISTA DE PRECIOS" (según tu Excel):
+        # A: productCode (ej TR-15725)
+        # B: CODIGO (ej 15725)  <-- ESTE ES EL CODE QUE COINCIDE CON tu JSON
+        # C: CO (ej TR-)
+        # F: ubicación
+        # G: DESCRIPCIÓN
+        # H: P/U (USD)
+        # I: EMPAQUE (texto)
+        # J: MARCA
+        # L: almacen (CENTRAL, etc.)
+
+        product_code = r[0]
+        codigo = r[1]
+        co = r[2]
+        ubicacion = r[5]
+        descripcion = r[6]
+        usd_unit = r[7]
+        empaque = r[8]
+        marca = r[9]
+        almacen = r[11]
 
         if codigo is None:
             continue
@@ -162,25 +172,29 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
         if not code:
             continue
 
-        bs = to_float(bs_price)
         usd_u = to_float(usd_unit)
-        usd_d = to_float(usd_docena)
 
-        # Necesitamos al menos Bs o USD unitario (por fallback)
-        if bs is None and usd_u is None:
+        # si no hay precio USD, no sirve para actualizar
+        if usd_u is None:
             continue
 
         filas_excel += 1
 
         excel_by_code[code] = {
             "code": code,
+            "productCode": str(product_code).strip() if product_code else None,
             "co": str(co).strip() if co else None,
             "location": str(ubicacion).strip() if ubicacion is not None else None,
             "description": str(descripcion).strip() if descripcion else "",
+            "package": str(empaque).strip() if empaque else "",
+            "brand": str(marca).strip().lower() if marca else "",
+            "warehouse": str(almacen).strip() if almacen else "",
             "usd_price_unit": usd_u,
-            "usd_price_docena": usd_d,
-            "bs_price_proveedor": bs,  # ESTA ES LA CLAVE
+            # en este Excel NO viene docena ni Bs directo
+            "usd_price_docena": None,
+            "bs_price_proveedor": None,
         }
+
 
 
     # 4) Cargar JSON base y mapear por code
@@ -203,13 +217,13 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
         usd_d = info.get("usd_price_docena")
         bs_lista = info.get("bs_price_proveedor")
 
-        # 1) Base Bs proveedor: preferimos SIEMPRE columna H
-        #    Si viene vacío, recién usamos USD*TIPO_CAMBIO como respaldo.
+        # Si el Excel NO trae Bs proveedor, convertimos desde USD usando TIPO_CAMBIO
+        # y el descuento G6 se aplica sobre el costo (ya convertido a Bs).
         if bs_lista is None:
             bs_lista = (usd_u * TIPO_CAMBIO) if usd_u is not None else 0.0
 
-        # 2) Costo con descuento proveedor (G6)
         costo_bs = bs_lista * (1.0 - float(descuento_proveedor))
+
 
         # 3) Margen y precio final web
         margen = _calc_margen(costo_bs)
