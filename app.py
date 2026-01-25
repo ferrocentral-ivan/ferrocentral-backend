@@ -97,6 +97,26 @@ CORS(app, origins=[
 ], supports_credentials=True)
 
 
+ALLOWED_ORIGINS = {
+    "http://127.0.0.1:5000",
+    "http://localhost:5000",
+    "https://ferrocentral.com.bo",
+    "https://www.ferrocentral.com.bo",
+}
+
+@app.after_request
+def add_cors_headers(resp):
+    origin = request.headers.get("Origin")
+    if origin in ALLOWED_ORIGINS:
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Vary"] = "Origin"
+        resp.headers["Access-Control-Allow-Credentials"] = "true"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+    return resp
+
+
+
 
 
 def send_reset_email(to_email, link):
