@@ -118,7 +118,8 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
     if ext not in ALLOWED_EXCEL_EXTS:
         return {"ok": False, "error": f"Extensión Excel no soportada: {ext}"}
 
-    wb = load_workbook(excel_path, data_only=True, keep_vba=(ext == ".xlsm"))
+    # Abrimos en modo lectura para que sea MUCHO más rápido y no cargue macros
+    wb = load_workbook(file_path, data_only=True, read_only=True, keep_vba=False)
 
     # 1) Descuento desde G6 en HOJA PEDIDO
     ws_header = wb["HOJA PEDIDO"] if "HOJA PEDIDO" in wb.sheetnames else wb.active
