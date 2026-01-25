@@ -172,6 +172,9 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
         if not code:
             continue
 
+        if not code.isdigit():
+            continue
+
         usd_u = to_float(usd_unit)
 
         # si no hay precio USD, no sirve para actualizar
@@ -207,7 +210,7 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
         if c:
             by_code[c] = p
 
-    updated = 0
+    updated_codes = set()
     created = 0
     missing_in_excel = 0
     nuevos_codigos = []
@@ -234,7 +237,7 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
 
         if code in by_code:
             p = by_code[code]
-            updated += 1
+            updated_codes.add(code)
 
 
             # Actualiza SOLO lo necesario para precios (no rompemos promo, etc.)
@@ -268,7 +271,6 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
             if p.get("estrella_score") is None:
                 p["estrella_score"] = 0
 
-            updated += 1
 
         else:
             # Crear producto nuevo con el MISMO schema que tu catálogo
@@ -321,7 +323,7 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
 
         # nombres “nuevos” (claros)
         "filas_excel_validas": filas_excel,
-        "actualizados": updated,
+        "actualizados": len(updated_codes),
         "creados_nuevos": created,
         "en_json_no_en_excel": missing_in_excel,
         "descuento_proveedor": float(descuento_proveedor),

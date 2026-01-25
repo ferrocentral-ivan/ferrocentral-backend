@@ -2240,7 +2240,7 @@ def auth_me():
 
 
 
-ALLOWED_EXCEL_EXT = {".xlsx", ".xlsm"}
+ALLOWED_EXCEL_EXT = {".xlsx", ".xlsm", ".xls"}
 
 def _ext_of(filename: str) -> str:
     return os.path.splitext(filename or "")[1].lower()
