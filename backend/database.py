@@ -92,7 +92,10 @@ def create_tables():
     CREATE TABLE IF NOT EXISTS producto_overrides (
         code TEXT PRIMARY KEY,
         oculto BOOLEAN NOT NULL DEFAULT FALSE,
-        imagen TEXT
+        imagen TEXT,
+        destacado BOOLEAN NOT NULL DEFAULT FALSE,
+        orden INTEGER NOT NULL DEFAULT 0,
+        promo_label TEXT
     );
     """)
 

@@ -1953,36 +1953,52 @@ def api_producto_por_codigo(code):
 @app.route("/api/catalogo")
 def api_catalogo():
     """
-    Fuente de verdad: PostgreSQL (productos_catalogo).
-    Devuelve la MISMA estructura que antes (lista de productos).
+    Devuelve TODO el catálogo para la tienda.
+    FUENTE DE VERDAD: PostgreSQL (tabla productos_catalogo).
+    Fallback: si la tabla está vacía, usa productos_precios.json (solo para no romper).
     """
+    import json
+    import os
     from flask import jsonify, make_response
 
+    # 1) Intentar BD primero
     try:
         conn = get_connection()
         cur = conn.cursor()
-
-        # Orden numérico si es posible
-        cur.execute("""
-            SELECT data
-            FROM productos_catalogo
-            ORDER BY
-              CASE WHEN code ~ '^[0-9]+$' THEN code::int ELSE NULL END,
-              code
-        """)
-
+        cur.execute("SELECT data FROM productos_catalogo")
         rows = cur.fetchall() or []
-        data = [r["data"] for r in rows]
-
         conn.close()
 
-        resp = make_response(jsonify(data))
-        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-        resp.headers["Pragma"] = "no-cache"
-        return resp
+        if rows:
+            data = []
+            for r in rows:
+                # RealDictCursor -> r es dict
+                item = r.get("data") if isinstance(r, dict) else r[0]
+                if isinstance(item, dict):
+                    data.append(item)
+            resp = make_response(jsonify(data))
+            resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            resp.headers["Pragma"] = "no-cache"
+            return resp
 
     except Exception as e:
-        return jsonify({"ok": False, "error": f"DB catalogo error: {e}"}), 500
+        print("CATALOGO DB ERROR:", e)
+
+    # 2) Fallback (solo si BD vacía / falla)
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(base_dir, "productos_precios.json")
+
+    if not os.path.exists(path):
+        return jsonify({"ok": False, "error": "No hay catálogo disponible (BD vacía y falta productos_precios.json)"}), 404
+
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    resp = make_response(jsonify(data))
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
+
 
 
 @app.get("/api/admin_stats")
@@ -2388,9 +2404,19 @@ def api_product_overrides_all():
     cur = conn.cursor()
     cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS destacado BOOLEAN DEFAULT FALSE")
     cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS orden INTEGER DEFAULT 0")
+    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS promo_label TEXT")
     conn.commit()
 
-    cur.execute("SELECT code, oculto, imagen, COALESCE(destacado,false) AS destacado, COALESCE(orden,0) AS orden FROM producto_overrides")
+    cur.execute("""
+    SELECT
+    code,
+    oculto,
+    imagen,
+    COALESCE(destacado,false) AS destacado,
+    COALESCE(orden,0) AS orden,
+    COALESCE(promo_label,'') AS promo_label
+    FROM producto_overrides
+    """)
     rows = [dict(r) for r in cur.fetchall()]
     conn.close()
     return jsonify({"ok": True, "overrides": rows})
@@ -2418,6 +2444,8 @@ def api_actualizar_precios():
         # Si tu admin.html usa estos nombres en español, también los dejamos
         r.setdefault("filas_excel", r.get("filas_excel_validas"))
         r.setdefault("descuento", r.get("descuento_proveedor"))
+        r.setdefault("nuevos", r.get("nuevos") if r.get("nuevos") is not None else len(r.get("nuevos_codigos") or []))
+        r.setdefault("nuevos_codigos", r.get("nuevos_codigos") or [x.get("code") for x in (r.get("nuevos_detectados") or []) if isinstance(x, dict)])
 
     return jsonify(r), (200 if r.get("ok") else 400)
 
@@ -2460,6 +2488,9 @@ def api_product_override(code):
 
     destacado = True if data.get("destacado") else False
 
+    promo_label = (data.get("promo_label") or "").strip() or None
+
+
     try:
         orden = int(data.get("orden") or 0)
     except:
@@ -2467,15 +2498,16 @@ def api_product_override(code):
 
     cur.execute(
         """
-        INSERT INTO producto_overrides (code, oculto, imagen, destacado, orden)
-        VALUES (%s, %s, %s, %s, %s)
+        INSERT INTO producto_overrides (code, oculto, imagen, destacado, orden, promo_label)
+        VALUES (%s, %s, %s, %s, %s, %s)
         ON CONFLICT(code) DO UPDATE SET
             oculto = excluded.oculto,
             imagen = excluded.imagen,
             destacado = excluded.destacado,
-            orden = excluded.orden
+            orden = excluded.orden,
+            promo_label = excluded.promo_label
         """,
-        (code, oculto, imagen, destacado, orden),
+        (code, oculto, imagen, destacado, orden, promo_label),
     )
 
     conn.commit()
