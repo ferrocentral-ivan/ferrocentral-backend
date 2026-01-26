@@ -356,9 +356,61 @@ def audit(action: str, entity: str, entity_id=None, payload=None):
 
 
 # ✅ Inicialización (NO tumbar el servidor si la DB falla)
+
+def seed_catalogo_from_json_if_empty():
+    """
+    Seed seguro:
+    - Si productos_catalogo está vacío, intenta cargar productos_precios.json del disco.
+    - No reemplaza si ya hay datos en BD.
+    - No rompe el arranque si falla.
+    """
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        cur.execute("SELECT COUNT(*) AS n FROM productos_catalogo")
+        row = cur.fetchone()
+        n = int((row or {}).get("n") or 0)
+
+        if n > 0:
+            conn.close()
+            return  # ya hay catálogo en BD
+
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        json_path = os.path.join(base_dir, "productos_precios.json")
+        if not os.path.exists(json_path):
+            conn.close()
+            return  # no hay JSON para seedear
+
+        with open(json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        now = datetime.utcnow().isoformat()
+        # Insert masivo simple (7000 rows OK)
+        for p in data:
+            code = str(p.get("code") or "").strip()
+            if not code:
+                continue
+            cur.execute(
+                """
+                INSERT INTO productos_catalogo (code, data, updated_at)
+                VALUES (%s, %s::jsonb, %s)
+                ON CONFLICT (code) DO NOTHING
+                """,
+                (code, json.dumps(p, ensure_ascii=False), now)
+            )
+
+        conn.commit()
+        conn.close()
+        print(f"SEED OK: productos_catalogo poblado desde JSON: {len(data)} items")
+
+    except Exception as e:
+        print("SEED WARN: no se pudo seedear catalogo desde JSON:", e)
+
 try:
     create_tables()
     bootstrap_super_admin()
+    seed_catalogo_from_json_if_empty()
 
     # --- MIGRACIÓN SEGURA: agregar precio_final si no existe ---
     conn = get_connection()
@@ -1901,27 +1953,36 @@ def api_producto_por_codigo(code):
 @app.route("/api/catalogo")
 def api_catalogo():
     """
-    Devuelve TODO el catálogo que usa la tienda (UN SOLO ORIGEN):
-    productos_precios.json
+    Fuente de verdad: PostgreSQL (productos_catalogo).
+    Devuelve la MISMA estructura que antes (lista de productos).
     """
-    import json
-    import os
     from flask import jsonify, make_response
 
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    path = os.path.join(base_dir, "productos_precios.json")
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
 
-    if not os.path.exists(path):
-        return jsonify({"ok": False, "error": "No existe productos_precios.json"}), 404
+        # Orden numérico si es posible
+        cur.execute("""
+            SELECT data
+            FROM productos_catalogo
+            ORDER BY
+              CASE WHEN code ~ '^[0-9]+$' THEN code::int ELSE NULL END,
+              code
+        """)
 
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+        rows = cur.fetchall() or []
+        data = [r["data"] for r in rows]
 
-    resp = make_response(jsonify(data))
-    # Evitar que el navegador se quede con precios viejos
-    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    resp.headers["Pragma"] = "no-cache"
-    return resp
+        conn.close()
+
+        resp = make_response(jsonify(data))
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        resp.headers["Pragma"] = "no-cache"
+        return resp
+
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"DB catalogo error: {e}"}), 500
 
 
 @app.get("/api/admin_stats")

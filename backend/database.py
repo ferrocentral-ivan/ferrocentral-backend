@@ -95,6 +95,15 @@ def create_tables():
         imagen TEXT
     );
     """)
+
+        # ===== CATALOGO (FUENTE DE VERDAD) =====
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS productos_catalogo (
+        code TEXT PRIMARY KEY,
+        data JSONB NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    """)
     
 
 
