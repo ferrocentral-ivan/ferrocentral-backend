@@ -2,9 +2,12 @@ import os
 import json
 from datetime import datetime
 from typing import Optional, Dict, Any, Tuple
+
 from openpyxl import load_workbook
+from psycopg2.extras import execute_batch
 
 from backend.database import get_connection
+
 
 SHEET_PRECIOS = "NUEVA LISTA DE PRECIOS"
 ALLOWED_EXCEL_EXTS = {".xlsx", ".xlsm", ".xls"}
@@ -17,13 +20,15 @@ EXCEL_CANDIDATES = [
     "proveedor.xls",
 ]
 
+
 def to_float(x):
     try:
         if x is None:
             return None
         return float(x)
-    except:
+    except Exception:
         return None
+
 
 def _parse_discount_cell(v) -> Optional[float]:
     if v is None:
@@ -34,17 +39,18 @@ def _parse_discount_cell(v) -> Optional[float]:
             s = s[:-1].strip()
         try:
             v = float(s)
-        except:
+        except Exception:
             return None
     try:
         v = float(v)
-    except:
+    except Exception:
         return None
     if v > 1:
         v = v / 100.0
     if v < 0 or v > 0.95:
         return None
     return v
+
 
 def _find_excel_path(base_dir: str) -> Tuple[Optional[str], list]:
     checked = []
@@ -64,6 +70,7 @@ def _find_excel_path(base_dir: str) -> Tuple[Optional[str], list]:
 
     return None, checked
 
+
 def _calc_margen(costo_bs: float) -> float:
     if costo_bs < 30:
         return 0.45
@@ -74,13 +81,11 @@ def _calc_margen(costo_bs: float) -> float:
     else:
         return 0.20
 
+
 def _calc_prices(usd_unit: float, descuento_proveedor: float) -> Dict[str, float]:
-    # costo proveedor en Bs con descuento global (G6)
     costo_bs = usd_unit * TIPO_CAMBIO * (1.0 - float(descuento_proveedor))
     margen = _calc_margen(costo_bs)
     bs_web = round(costo_bs * (1.0 + margen), 2)
-
-    # “bs_price_descuento25” como precio con -25% sobre web (solo si lo usas)
     bs_desc25 = round(bs_web * 0.75, 2)
 
     return {
@@ -89,6 +94,7 @@ def _calc_prices(usd_unit: float, descuento_proveedor: float) -> Dict[str, float
         "bs_price_web": float(bs_web),
         "bs_price_descuento25": float(bs_desc25),
     }
+
 
 def actualizar_precios(descuento_proveedor: Optional[float] = None):
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -116,6 +122,7 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
 
     ws = wb[SHEET_PRECIOS]
 
+    # ===== 1) Leer Excel -> excel_by_code =====
     excel_by_code: Dict[str, Dict[str, Any]] = {}
     filas_excel = 0
 
@@ -148,11 +155,36 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
             "usd_price_unit": usd_u,
         }
 
+    # ===== 2) Conectar BD + asegurar tablas/columnas (seguro, no rompe nada) =====
     conn = get_connection()
     cur = conn.cursor()
 
+    # Tabla catálogo persistente
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS productos_catalogo (
+            code TEXT PRIMARY KEY,
+            data JSONB NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+
+    # Asegurar columnas de overrides (si ya existen, no pasa nada)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS producto_overrides (
+            code TEXT PRIMARY KEY,
+            oculto BOOLEAN NOT NULL DEFAULT FALSE,
+            imagen TEXT
+        )
+    """)
+    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS destacado BOOLEAN DEFAULT FALSE")
+    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS orden INTEGER DEFAULT 0")
+    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS promo_label TEXT")
+    conn.commit()
+
+    # ===== 3) Leer catálogo existente desde BD =====
     cur.execute("SELECT code, data FROM productos_catalogo")
     rows = cur.fetchall() or []
+
     db_by_code = {}
     for rr in rows:
         c = str(rr.get("code") or "").strip()
@@ -161,7 +193,6 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
 
     db_codes = set(db_by_code.keys())
     excel_codes = set(excel_by_code.keys())
-
     missing = sorted(list(db_codes - excel_codes))
 
     actualizados = 0
@@ -170,72 +201,108 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
 
     now = datetime.utcnow().isoformat()
 
+    # ===== 4) Batch buffers para evitar timeout =====
+    upsert_params = []
+    new_params = []
+    override_params = []
+    BATCH_SIZE = 300
+
+    # ===== 5) Procesar Excel =====
     for code, ex in excel_by_code.items():
         prices = _calc_prices(ex["usd_price_unit"], float(descuento_proveedor))
 
         if code in db_by_code:
+            # ---- EXISTENTE ----
             p = dict(db_by_code[code])
             p["code"] = code
             p["description"] = ex.get("description", p.get("description", ""))
             p["brand"] = ex.get("brand", p.get("brand", "")).strip().lower()
             p["usd_price_unit"] = ex["usd_price_unit"]
             p["proveedor_descuento"] = float(descuento_proveedor)
-
-            # precios calculados
             p.update(prices)
 
-            cur.execute(
-                """
+            upsert_params.append((code, json.dumps(p, ensure_ascii=False), now))
+            actualizados += 1
+
+        else:
+            # ---- NUEVO ----
+            nuevos_codigos.append(code)
+            nuevos_detalle.append({
+                "code": code,
+                "description": ex.get("description", ""),
+                "brand": ex.get("brand", ""),
+                "usd_price_unit": ex.get("usd_price_unit"),
+            })
+
+            pnew = {
+                "code": code,
+                "description": ex.get("description", ""),
+                "brand": ex.get("brand", ""),
+                "usd_price_unit": ex.get("usd_price_unit"),
+                "proveedor_descuento": float(descuento_proveedor),
+                "es_nuevo": True,
+            }
+            pnew.update(prices)
+
+            new_params.append((code, json.dumps(pnew, ensure_ascii=False), now))
+
+            # placeholder + etiqueta NUEVO (no pisa si ya existe override)
+            override_params.append((code, "img/nuevo.jpg", "NUEVO"))
+
+        # ===== flush por lotes =====
+        if len(upsert_params) >= BATCH_SIZE:
+            execute_batch(cur, """
                 INSERT INTO productos_catalogo (code, data, updated_at)
                 VALUES (%s, %s::jsonb, %s)
                 ON CONFLICT (code)
-                DO UPDATE SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at
-                """,
-                (code, json.dumps(p, ensure_ascii=False), now)
-            )
-            actualizados += 1
-            continue
+                DO UPDATE SET
+                    data = EXCLUDED.data,
+                    updated_at = EXCLUDED.updated_at
+            """, upsert_params)
+            upsert_params.clear()
 
-        # === NUEVO DETECTADO ===
-        nuevos_codigos.append(code)
-        nuevos_detalle.append({
-            "code": code,
-            "description": ex.get("description", ""),
-            "brand": ex.get("brand", ""),
-            "usd_price_unit": ex.get("usd_price_unit"),
-        })
+        if len(new_params) >= BATCH_SIZE:
+            execute_batch(cur, """
+                INSERT INTO productos_catalogo (code, data, updated_at)
+                VALUES (%s, %s::jsonb, %s)
+                ON CONFLICT (code)
+                DO NOTHING
+            """, new_params)
+            new_params.clear()
 
-        # Insertar en catálogo (mínimo seguro) + marcar es_nuevo
-        pnew = {
-            "code": code,
-            "description": ex.get("description", ""),
-            "brand": ex.get("brand", ""),
-            "usd_price_unit": ex.get("usd_price_unit"),
-            "proveedor_descuento": float(descuento_proveedor),
-            "es_nuevo": True,
-        }
-        pnew.update(prices)
+        if len(override_params) >= BATCH_SIZE:
+            execute_batch(cur, """
+                INSERT INTO producto_overrides (code, oculto, imagen, destacado, orden, promo_label)
+                VALUES (%s, FALSE, %s, FALSE, 0, %s)
+                ON CONFLICT (code) DO NOTHING
+            """, override_params)
+            override_params.clear()
 
-        cur.execute(
-            """
+    # ===== 6) flush final (UNA sola vez) =====
+    if upsert_params:
+        execute_batch(cur, """
+            INSERT INTO productos_catalogo (code, data, updated_at)
+            VALUES (%s, %s::jsonb, %s)
+            ON CONFLICT (code)
+            DO UPDATE SET
+                data = EXCLUDED.data,
+                updated_at = EXCLUDED.updated_at
+        """, upsert_params)
+
+    if new_params:
+        execute_batch(cur, """
             INSERT INTO productos_catalogo (code, data, updated_at)
             VALUES (%s, %s::jsonb, %s)
             ON CONFLICT (code)
             DO NOTHING
-            """,
-            (code, json.dumps(pnew, ensure_ascii=False), now)
-        )
+        """, new_params)
 
-        # Crear override para que salga en OFERTAS como NUEVO + placeholder
-        # (Si ya existe override, NO lo pisamos)
-        cur.execute(
-            """
+    if override_params:
+        execute_batch(cur, """
             INSERT INTO producto_overrides (code, oculto, imagen, destacado, orden, promo_label)
             VALUES (%s, FALSE, %s, FALSE, 0, %s)
             ON CONFLICT (code) DO NOTHING
-            """,
-            (code, "img/nuevo.jpg", "NUEVO")
-        )
+        """, override_params)
 
     conn.commit()
     conn.close()
