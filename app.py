@@ -1621,145 +1621,155 @@ def generar_factura_pdf(pedido_id):
 
 
 @app.route("/api/reporte_facturados")
+@require_role("SUPER_ADMIN", "ADMIN")
 def reporte_facturados():
-    """PDF: Libro de ventas (pedidos facturados) en formato profesional."""
     try:
-        with SessionLocal() as db:
-            rows = (
-                db.query(Pedido.fecha, Empresa.razon_social, Empresa.nit, Pedido.id, Pedido.total)
-                .join(Empresa, Pedido.empresa_id == Empresa.id)
-                .filter(Pedido.estado == "facturado")
-                .order_by(Pedido.fecha.desc())
-                .all()
-            )
+        conn = get_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        cur.execute("""
+            SELECT
+                p.id AS pedido_id,
+                COALESCE(p.facturado_en, p.fecha) AS fecha,
+                p.total AS total,
+                e.razon_social AS empresa,
+                e.nit AS nit
+            FROM pedidos p
+            LEFT JOIN empresas e ON e.id = p.empresa_id
+            WHERE p.estado = 'facturado'
+            ORDER BY COALESCE(p.facturado_en, p.fecha) DESC NULLS LAST
+        """)
+        rows = cur.fetchall()
+        conn.close()
 
         buffer = BytesIO()
         c = canvas.Canvas(buffer, pagesize=letter)
         width, height = letter
 
-        header_h = 55
-        margin_x = 40
-        margin_bottom = 45
+        def _pdf_text(s):
+            if s is None:
+                return ""
+            s = str(s)
+            return s.encode("cp1252", errors="replace").decode("cp1252")
 
-        def draw_header(page_num: int):
-            # Barra superior
-            c.setFillColor(colors.HexColor("#111827"))
-            c.rect(0, height - header_h, width, header_h, fill=1, stroke=0)
+        def draw_header():
+            # Franja roja
+            c.setFillColorRGB(0.88, 0.22, 0.22)
+            c.rect(0, height - 70, width, 70, fill=1, stroke=0)
 
-            # Título
             c.setFillColor(colors.white)
-            c.setFont("Helvetica-Bold", 16)
-            c.drawString(margin_x, height - 35, "LIBRO DE VENTAS - FACTURAS SIAT")
+            c.setFont("Helvetica-Bold", 18)
+            c.drawCentredString(width / 2, height - 42, "LIBRO DE VENTAS - FACTURAS SIAT")
 
-            # Fecha de generación (Bolivia)
-            c.setFont("Helvetica", 9)
-            now_bo = datetime.now(ZoneInfo("America/La_Paz"))
-            c.drawRightString(width - margin_x, height - 30, f"Generado: {now_bo.strftime('%Y-%m-%d %H:%M')}")
+            # Logo (mismo patrón que proforma)
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            logo_path = os.path.join(base_dir, "img", "logos", "logo_empresa.png")
 
-            # Logo (igual que proforma)
-            try:
-                logo_url = "https://ferrocentral.com.bo/img/logos/logo_empresa.png"
-                with urlopen(logo_url, timeout=8) as resp:
-                    data = resp.read()
-                img = ImageReader(BytesIO(data))
+            def _draw_logo(img_source):
                 c.drawImage(
-                    img,
-                    margin_x,
-                    height - header_h + 8,
-                    width=75,
-                    height=40,
+                    img_source,
+                    40,
+                    height - 62,
+                    width=95,
+                    height=48,
+                    preserveAspectRatio=True,
                     mask="auto",
-                    preserveAspectRatio=True
                 )
-            except Exception as e:
-                print("⚠️ Logo libro de ventas no cargado:", e)
 
-            # Subtítulo
+            try:
+                if os.path.exists(logo_path):
+                    _draw_logo(logo_path)
+                else:
+                    logo_url = "https://ferrocentral.com.bo/img/logos/logo_empresa.png"
+                    with urlopen(logo_url, timeout=10) as resp:
+                        data = resp.read()
+                    _draw_logo(ImageReader(BytesIO(data)))
+            except Exception:
+                pass
+
             c.setFillColor(colors.black)
-            c.setFont("Helvetica", 10)
-            c.drawString(margin_x, height - header_h - 18, f"Total facturas: {len(rows)}")
-            c.drawRightString(width - margin_x, height - header_h - 18, f"Página {page_num}")
+            c.setFont("Helvetica", 9)
+            c.drawRightString(width - 40, height - 85, f"Generado: {fmt_fecha_bo(datetime.now(BO_TZ))}")
 
         def draw_table_header(y):
-            # Encabezado tabla
-            c.setFillColor(colors.HexColor("#F3F4F6"))
-            c.roundRect(margin_x, y - 18, width - 2 * margin_x, 22, 6, fill=1, stroke=0)
+            c.setFillColorRGB(0.95, 0.95, 0.95)
+            c.roundRect(40, y - 18, width - 80, 22, 6, fill=1, stroke=0)
 
-            c.setFillColor(colors.HexColor("#111827"))
-            c.setFont("Helvetica-Bold", 9)
-            x = margin_x + 10
-            c.drawString(x, y - 12, "Fecha (BO)")
-            c.drawString(x + 120, y - 12, "Empresa")
-            c.drawString(x + 310, y - 12, "NIT")
-            c.drawString(x + 415, y - 12, "Pedido")
-            c.drawRightString(width - margin_x - 10, y - 12, "Total (Bs)")
+            c.setFillColor(colors.black)
+            c.setFont("Helvetica-Bold", 10)
+            c.drawString(55,  y - 12, "Fecha")
+            c.drawString(165, y - 12, "Empresa")
+            c.drawString(345, y - 12, "NIT")
+            c.drawString(440, y - 12, "Pedido")
+            c.drawRightString(width - 55, y - 12, "Total (Bs)")
+
             return y - 28
 
-        def draw_footer():
-            c.setStrokeColor(colors.HexColor("#E5E7EB"))
-            c.line(margin_x, margin_bottom - 10, width - margin_x, margin_bottom - 10)
-            c.setFont("Helvetica", 8)
-            c.setFillColor(colors.HexColor("#6B7280"))
-            c.drawString(margin_x, margin_bottom - 25, "Distribuidora FerroCentral • Libro de ventas (interno)")
-            c.drawRightString(width - margin_x, margin_bottom - 25, "ferrocentral.com.bo")
+        draw_header()
 
-        # Render
-        page = 1
-        draw_header(page)
-        y = height - header_h - 40
+        y = height - 120
         y = draw_table_header(y)
 
         c.setFont("Helvetica", 9)
-        c.setFillColor(colors.black)
 
-        row_h = 18
-        alt = 0
-        for (fecha, razon, nit, pedido_id, total) in rows:
-            if y < margin_bottom + 35:
-                draw_footer()
-                c.showPage()
-                page += 1
-                draw_header(page)
-                y = height - header_h - 40
-                y = draw_table_header(y)
-                c.setFont("Helvetica", 9)
-                c.setFillColor(colors.black)
+        total_general = 0.0
 
-            # Fondo alternado (bonito)
-            c.setFillColor(colors.HexColor("#FFFFFF" if alt % 2 == 0 else "#FAFAFB"))
-            c.roundRect(margin_x, y - 14, width - 2 * margin_x, row_h, 6, fill=1, stroke=0)
-            alt += 1
+        for r in rows:
+            fecha_raw = r.get("fecha")
+            fecha_txt = fmt_fecha_bo(fecha_raw)
+            # mostrar sin segundos para que se vea más limpio
+            if len(fecha_txt) >= 16:
+                fecha_txt = fecha_txt[:16]
+
+            empresa = _pdf_text(r.get("empresa") or "-")
+            nit = _pdf_text(r.get("nit") or "-")
+            pedido_id = r.get("pedido_id")
+            total = float(r.get("total") or 0)
+            total_general += total
+
+            # fila con “tarjetita” suave
+            c.setFillColorRGB(1, 1, 1)
+            c.roundRect(40, y - 16, width - 80, 20, 6, fill=1, stroke=1)
 
             c.setFillColor(colors.black)
-            x = margin_x + 10
+            c.drawString(55, y - 10, fecha_txt)
+            c.drawString(165, y - 10, empresa[:26])
+            c.drawString(345, y - 10, nit[:14])
+            c.drawString(440, y - 10, str(pedido_id))
+            c.drawRightString(width - 55, y - 10, f"{total:.2f}")
 
-            # ✅ Fecha/hora en Bolivia (sin +00)
-            try:
-                fstr = fmt_fecha_bo(fecha, with_seconds=False)
-            except Exception:
-                fstr = str(fecha)[:16]
+            y -= 26
 
-            c.drawString(x, y - 10, fstr)
-            c.drawString(x + 120, y - 10, (razon or "")[:28])
-            c.drawString(x + 310, y - 10, str(nit or "")[:15])
-            c.drawString(x + 415, y - 10, f"#{pedido_id}")
-            c.drawRightString(width - margin_x - 10, y - 10, f"{float(total):.2f}")
+            if y < 95:
+                c.showPage()
+                draw_header()
+                y = height - 120
+                y = draw_table_header(y)
+                c.setFont("Helvetica", 9)
 
-            y -= row_h + 6
+        # Total general
+        y -= 10
+        c.setFillColorRGB(0.95, 0.95, 0.95)
+        c.roundRect(40, y - 20, width - 80, 26, 6, fill=1, stroke=0)
+        c.setFillColor(colors.black)
+        c.setFont("Helvetica-Bold", 11)
+        c.drawRightString(width - 55, y - 10, f"TOTAL GENERAL: Bs {total_general:.2f}")
 
-        draw_footer()
+        c.showPage()
         c.save()
-
         buffer.seek(0)
+
         return send_file(
             buffer,
             as_attachment=False,
             download_name="libro_ventas_facturados.pdf",
-            mimetype="application/pdf"
+            mimetype="application/pdf",
         )
+
     except Exception as e:
-        print("❌ Error en /api/reporte_facturados:", e)
+        print("❌ Error reporte_facturados:", e)
         return jsonify({"error": "No se pudo generar el libro de ventas"}), 500
+
 
 
 
