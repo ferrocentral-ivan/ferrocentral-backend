@@ -1718,62 +1718,58 @@ def api_pedido_cambiar_estado(pedido_id):
     return jsonify({"ok": True, "estado": nuevo_estado})
 
 @app.route("/api/pedidos/<int:pedido_id>/factura_siat", methods=["POST"])
-@require_role("SUPER_ADMIN", "ADMIN")
-def api_subir_factura_siat(pedido_id):
-    conn = get_connection()
-    cur = conn.cursor()
+def subir_factura_siat(pedido_id):
+    try:
+        if "file" not in request.files:
+            return jsonify(ok=False, error="No se envió el archivo PDF"), 400
 
-    blocked = forbid_if_not_owner(cur, pedido_id)
-    if blocked:
+        file = request.files["file"]
+        if file.filename == "":
+            return jsonify(ok=False, error="Nombre de archivo vacío"), 400
+
+        if not file.filename.lower().endswith(".pdf"):
+            return jsonify(ok=False, error="El archivo debe ser PDF"), 400
+
+        factura_nro = request.form.get("factura_nro", "").strip()
+        cuf = request.form.get("cuf", "").strip()
+
+        # 📁 Ruta segura (Render-friendly)
+        base_dir = os.path.join(os.getcwd(), "uploads", "facturas_siat")
+        os.makedirs(base_dir, exist_ok=True)
+
+        filename = f"pedido_{pedido_id}.pdf"
+        filepath = os.path.join(base_dir, filename)
+
+        file.save(filepath)
+
+        # Guardar en BD
+        conn = get_db()
+        cur = conn.cursor()
+
+        cur.execute("""
+            INSERT INTO pedido_factura_siat (pedido_id, archivo, factura_nro, cuf)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (pedido_id) DO UPDATE
+            SET archivo = EXCLUDED.archivo,
+                factura_nro = EXCLUDED.factura_nro,
+                cuf = EXCLUDED.cuf
+        """, (pedido_id, filepath, factura_nro, cuf))
+
+        cur.execute("""
+            UPDATE pedidos SET estado='facturado'
+            WHERE id=%s
+        """, (pedido_id,))
+
+        conn.commit()
+        cur.close()
         conn.close()
-        return blocked
 
-    if "file" not in request.files:
-        conn.close()
-        return jsonify({"ok": False, "error": "Falta archivo PDF (campo 'file')"}), 400
+        return jsonify(ok=True)
 
-    f = request.files["file"]
-    filename = (f.filename or "factura_siat.pdf").strip()
+    except Exception as e:
+        print("❌ ERROR FACTURA SIAT:", str(e))
+        return jsonify(ok=False, error="Error interno al guardar la factura"), 500
 
-    pdf_bytes = f.read()
-    if not pdf_bytes:
-        conn.close()
-        return jsonify({"ok": False, "error": "El PDF está vacío"}), 400
-
-    cuf = (request.form.get("cuf") or "").strip() or None
-    factura_nro = (request.form.get("factura_nro") or "").strip() or None
-    emitida_en = (request.form.get("emitida_en") or "").strip() or None  # opcional
-
-    now = datetime.utcnow().isoformat()
-
-    # Guardar/actualizar PDF SIAT
-    cur.execute("""
-        INSERT INTO pedido_factura_siat (pedido_id, filename, pdf, cuf, factura_nro, emitida_en, uploaded_at)
-        VALUES (%s,%s,%s,%s,%s,%s,%s)
-        ON CONFLICT (pedido_id) DO UPDATE SET
-            filename = EXCLUDED.filename,
-            pdf = EXCLUDED.pdf,
-            cuf = EXCLUDED.cuf,
-            factura_nro = EXCLUDED.factura_nro,
-            emitida_en = EXCLUDED.emitida_en,
-            uploaded_at = EXCLUDED.uploaded_at
-    """, (pedido_id, filename, psycopg2.Binary(pdf_bytes), cuf, factura_nro, emitida_en, now))
-
-    # Marcar pedido como facturado (y guardar datos si quieres)
-    cur.execute("""
-        UPDATE pedidos
-        SET estado='facturado',
-            facturado_en=COALESCE(facturado_en, %s),
-            factura_nro=COALESCE(%s, factura_nro)
-        WHERE id=%s
-    """, (now, factura_nro, pedido_id))
-
-    conn.commit()
-    conn.close()
-
-    audit("FACTURA_SIAT_SUBIDA", "pedido", pedido_id, {"filename": filename, "cuf": cuf, "factura_nro": factura_nro})
-
-    return jsonify({"ok": True, "message": "Factura SIAT adjuntada y pedido marcado como facturado."})
 
 @app.route("/api/pedidos/<int:pedido_id>/factura_siat", methods=["GET"])
 @require_role("SUPER_ADMIN", "ADMIN")
