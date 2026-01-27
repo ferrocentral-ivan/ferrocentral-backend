@@ -1718,57 +1718,75 @@ def api_pedido_cambiar_estado(pedido_id):
     return jsonify({"ok": True, "estado": nuevo_estado})
 
 @app.route("/api/pedidos/<int:pedido_id>/factura_siat", methods=["POST"])
+@require_role("SUPER_ADMIN", "ADMIN")
 def subir_factura_siat(pedido_id):
     try:
+        # Validación archivo
         if "file" not in request.files:
             return jsonify(ok=False, error="No se envió el archivo PDF"), 400
 
-        file = request.files["file"]
-        if file.filename == "":
-            return jsonify(ok=False, error="Nombre de archivo vacío"), 400
+        f = request.files["file"]
+        if not f or not f.filename:
+            return jsonify(ok=False, error="Archivo vacío"), 400
 
-        if not file.filename.lower().endswith(".pdf"):
+        if not f.filename.lower().endswith(".pdf"):
             return jsonify(ok=False, error="El archivo debe ser PDF"), 400
 
-        factura_nro = request.form.get("factura_nro", "").strip()
-        cuf = request.form.get("cuf", "").strip()
+        # Campos opcionales
+        factura_nro = (request.form.get("factura_nro") or "").strip()
+        cuf = (request.form.get("cuf") or "").strip()
 
-        # 📁 Ruta segura (Render-friendly)
-        base_dir = os.path.join(os.getcwd(), "uploads", "facturas_siat")
-        os.makedirs(base_dir, exist_ok=True)
+        # Leer bytes (BYTEA)
+        pdf_bytes = f.read()
+        if not pdf_bytes:
+            return jsonify(ok=False, error="PDF vacío"), 400
 
-        filename = f"pedido_{pedido_id}.pdf"
-        filepath = os.path.join(base_dir, filename)
+        # Nombre seguro
+        filename = secure_filename(f.filename) or f"pedido_{pedido_id}.pdf"
 
-        file.save(filepath)
+        # Guardar en BD (coincide con database.py: filename, pdf, cuf, factura_nro, emitida_en, uploaded_at)
+        now = datetime.utcnow().isoformat()
 
-        # Guardar en BD
-        conn = get_db()
+        conn = get_connection()
         cur = conn.cursor()
 
-        cur.execute("""
-            INSERT INTO pedido_factura_siat (pedido_id, archivo, factura_nro, cuf)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (pedido_id) DO UPDATE
-            SET archivo = EXCLUDED.archivo,
-                factura_nro = EXCLUDED.factura_nro,
-                cuf = EXCLUDED.cuf
-        """, (pedido_id, filepath, factura_nro, cuf))
+        # Seguridad: ADMIN solo sus pedidos
+        blocked = forbid_if_not_owner(cur, pedido_id)
+        if blocked:
+            conn.close()
+            return blocked
 
         cur.execute("""
-            UPDATE pedidos SET estado='facturado'
+            INSERT INTO pedido_factura_siat (pedido_id, filename, pdf, cuf, factura_nro, emitida_en, uploaded_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (pedido_id) DO UPDATE
+            SET filename   = EXCLUDED.filename,
+                pdf        = EXCLUDED.pdf,
+                cuf        = EXCLUDED.cuf,
+                factura_nro= EXCLUDED.factura_nro,
+                emitida_en = EXCLUDED.emitida_en,
+                uploaded_at= EXCLUDED.uploaded_at
+        """, (pedido_id, filename, psycopg2.Binary(pdf_bytes), cuf or None, factura_nro or None, now, now))
+
+        # Marcar pedido como facturado
+        cur.execute("""
+            UPDATE pedidos
+            SET estado='facturado', facturado_en=%s, factura_nro=%s
             WHERE id=%s
-        """, (pedido_id,))
+        """, (now, factura_nro or None, pedido_id))
 
         conn.commit()
-        cur.close()
         conn.close()
 
-        return jsonify(ok=True)
+        audit("FACTURA_SIAT_SUBIDA", "pedido", pedido_id, {"filename": filename, "cuf": cuf, "factura_nro": factura_nro})
+
+        return jsonify(ok=True, filename=filename)
 
     except Exception as e:
         print("❌ ERROR FACTURA SIAT:", str(e))
+        traceback.print_exc()
         return jsonify(ok=False, error="Error interno al guardar la factura"), 500
+
 
 
 @app.route("/api/pedidos/<int:pedido_id>/factura_siat", methods=["GET"])
