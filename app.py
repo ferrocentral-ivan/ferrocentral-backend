@@ -222,32 +222,68 @@ Ferrocentral
 BO_TZ = ZoneInfo("America/La_Paz")
 UTC_TZ = ZoneInfo("UTC")
 
+def _normalize_iso_offset(s: str) -> str:
+    """
+    Normaliza offsets:
+    - ...+00  -> ...+00:00
+    - ...+0000 -> ...+00:00
+    - ...Z -> ...+00:00
+    """
+    s = (s or "").strip()
+    if s.endswith("Z"):
+        return s[:-1] + "+00:00"
+
+    # +00 o -04 (sin :00)
+    import re
+    m = re.search(r"([+-]\d{2})$", s)
+    if m:
+        return s + ":00"
+
+    # +0000 o -0400 (sin :)
+    m = re.search(r"([+-]\d{2})(\d{2})$", s)
+    if m:
+        return s[:-5] + m.group(1) + ":" + m.group(2)
+
+    return s
+
 def fmt_fecha_bo(fecha):
     """
-    Convierte fecha (datetime o string) asumida en UTC -> hora Bolivia.
+    Convierte fecha (datetime o string) a hora Bolivia.
+    - Si viene naive => asumimos UTC (Render)
+    - Si viene con tz => convertimos a BO
     Devuelve string: YYYY-MM-DD HH:MM:SS
     """
     if fecha is None:
         return ""
 
-    # Si viene como string tipo "2026-01-15 19:23:45"
+    from datetime import datetime
+
+    # string
     if isinstance(fecha, str):
+        s = _normalize_iso_offset(fecha.replace("T", " "))
+        # Intento 1: fromisoformat (maneja microsegundos y +00:00)
         try:
-            # soporta "YYYY-MM-DD HH:MM:SS"
-            dt = datetime.strptime(fecha, "%Y-%m-%d %H:%M:%S")
+            dt = datetime.fromisoformat(s)
         except Exception:
-            # fallback: devolver lo mismo si no parsea
-            return str(fecha)
+            # Intento 2: formatos clásicos
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+                try:
+                    dt = datetime.strptime(s, fmt)
+                    break
+                except Exception:
+                    dt = None
+            if dt is None:
+                return str(fecha)
     else:
         dt = fecha
 
-    # Si es naive, asumimos UTC (Render)
+    # naive => UTC
     if getattr(dt, "tzinfo", None) is None:
         dt = dt.replace(tzinfo=UTC_TZ)
 
-    # Convertir a Bolivia
     dt_bo = dt.astimezone(BO_TZ)
     return dt_bo.strftime("%Y-%m-%d %H:%M:%S")
+
 
 
 
@@ -1646,10 +1682,8 @@ def reporte_facturados():
         nit = r.get("nit") or ""
 
     # fecha puede venir como datetime o string
-        if hasattr(fecha, "strftime"):
-            fecha_str = fecha.strftime("%Y-%m-%d %H:%M")
-        else:
-            fecha_str = str(fecha)
+        fecha = r["fecha"]
+        fecha_str = fmt_fecha_bo(fecha)[:16]  # YYYY-MM-DD HH:MM (Bolivia)
 
         if y < 60:
             c.showPage()
@@ -1687,6 +1721,85 @@ def reporte_facturados():
         download_name="ventas_facturadas.pdf",
         mimetype="application/pdf",
     )
+
+
+@app.route("/api/facturas", methods=["GET"])
+@require_role("SUPER_ADMIN", "ADMIN")
+def api_listar_facturas():
+    conn = get_connection()
+    cur = conn.cursor()
+
+    role = session.get("role")
+    admin_id = session.get("admin_id")
+
+    if role == "ADMIN":
+        cur.execute("""
+            SELECT
+                p.id,
+                p.fecha,
+                p.total,
+                p.factura_nro,
+                e.razon_social,
+                e.nit,
+                s.filename,
+                s.cuf,
+                s.uploaded_at
+            FROM pedidos p
+            JOIN empresas e ON e.id = p.empresa_id
+            LEFT JOIN pedido_factura_siat s ON s.pedido_id = p.id
+            WHERE p.estado = 'facturado'
+              AND p.admin_id = %s
+            ORDER BY p.fecha DESC, p.id DESC
+        """, (admin_id,))
+    else:
+        cur.execute("""
+            SELECT
+                p.id,
+                p.fecha,
+                p.total,
+                p.factura_nro,
+                e.razon_social,
+                e.nit,
+                s.filename,
+                s.cuf,
+                s.uploaded_at
+            FROM pedidos p
+            JOIN empresas e ON e.id = p.empresa_id
+            LEFT JOIN pedido_factura_siat s ON s.pedido_id = p.id
+            WHERE p.estado = 'facturado'
+            ORDER BY p.fecha DESC, p.id DESC
+        """)
+
+    rows = cur.fetchall()
+    conn.close()
+
+    out = []
+    for r in rows:
+        rid = r["id"] if isinstance(r, dict) else r[0]
+        fecha = r["fecha"] if isinstance(r, dict) else r[1]
+        total = r["total"] if isinstance(r, dict) else r[2]
+        factura_nro = r.get("factura_nro") if isinstance(r, dict) else r[3]
+        razon = r.get("razon_social") if isinstance(r, dict) else r[4]
+        nit = r.get("nit") if isinstance(r, dict) else r[5]
+        filename = r.get("filename") if isinstance(r, dict) else r[6]
+        cuf = r.get("cuf") if isinstance(r, dict) else r[7]
+        uploaded_at = r.get("uploaded_at") if isinstance(r, dict) else r[8]
+
+        out.append({
+            "pedido_id": rid,
+            "fecha": fmt_fecha_bo(fecha),                 # Bolivia
+            "total": float(total or 0),
+            "razon_social": razon or "",
+            "nit": nit or "",
+            "factura_nro": factura_nro,
+            "cuf": cuf,
+            "filename": filename,
+            "has_pdf": bool(filename),
+            "uploaded_at": fmt_fecha_bo(uploaded_at) if uploaded_at else ""
+        })
+
+    return jsonify({"ok": True, "facturas": out})
+
 
 
 @app.route('/api/pedidos/<int:pedido_id>/estado', methods=['POST'])
