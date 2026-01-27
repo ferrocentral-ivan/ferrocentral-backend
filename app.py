@@ -13,6 +13,7 @@ except Exception as e:
 from werkzeug.utils import secure_filename
 import traceback
 from psycopg2.extras import RealDictCursor
+import psycopg2
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
