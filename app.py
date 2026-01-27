@@ -812,10 +812,19 @@ def api_pedido_detalle(pedido_id):
         WHERE p.id = %s
     """, (pedido_id,))
     header = cur.fetchone()
+    
+    cur.execute("SELECT 1 FROM pedido_factura_siat WHERE pedido_id=%s", (pedido_id,))
+    header_has_pdf = cur.fetchone() is not None
+
 
     if header is None:
         conn.close()
-        return jsonify({"ok": False, "error": "Pedido no encontrado"}), 404
+        return jsonify({
+            "ok": False,
+            "error": "Pedido no encontrado",
+            "factura_siat": {"exists": header_has_pdf}
+        }), 404
+    
     
     # ✅ Ajustar fecha a hora Bolivia también en el DETALLE
     try:
@@ -1707,6 +1716,100 @@ def api_pedido_cambiar_estado(pedido_id):
     conn.close()
 
     return jsonify({"ok": True, "estado": nuevo_estado})
+
+@app.route("/api/pedidos/<int:pedido_id>/factura_siat", methods=["POST"])
+@require_role("SUPER_ADMIN", "ADMIN")
+def api_subir_factura_siat(pedido_id):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    blocked = forbid_if_not_owner(cur, pedido_id)
+    if blocked:
+        conn.close()
+        return blocked
+
+    if "file" not in request.files:
+        conn.close()
+        return jsonify({"ok": False, "error": "Falta archivo PDF (campo 'file')"}), 400
+
+    f = request.files["file"]
+    filename = (f.filename or "factura_siat.pdf").strip()
+
+    pdf_bytes = f.read()
+    if not pdf_bytes:
+        conn.close()
+        return jsonify({"ok": False, "error": "El PDF está vacío"}), 400
+
+    cuf = (request.form.get("cuf") or "").strip() or None
+    factura_nro = (request.form.get("factura_nro") or "").strip() or None
+    emitida_en = (request.form.get("emitida_en") or "").strip() or None  # opcional
+
+    now = datetime.utcnow().isoformat()
+
+    # Guardar/actualizar PDF SIAT
+    cur.execute("""
+        INSERT INTO pedido_factura_siat (pedido_id, filename, pdf, cuf, factura_nro, emitida_en, uploaded_at)
+        VALUES (%s,%s,%s,%s,%s,%s,%s)
+        ON CONFLICT (pedido_id) DO UPDATE SET
+            filename = EXCLUDED.filename,
+            pdf = EXCLUDED.pdf,
+            cuf = EXCLUDED.cuf,
+            factura_nro = EXCLUDED.factura_nro,
+            emitida_en = EXCLUDED.emitida_en,
+            uploaded_at = EXCLUDED.uploaded_at
+    """, (pedido_id, filename, psycopg2.Binary(pdf_bytes), cuf, factura_nro, emitida_en, now))
+
+    # Marcar pedido como facturado (y guardar datos si quieres)
+    cur.execute("""
+        UPDATE pedidos
+        SET estado='facturado',
+            facturado_en=COALESCE(facturado_en, %s),
+            factura_nro=COALESCE(%s, factura_nro)
+        WHERE id=%s
+    """, (now, factura_nro, pedido_id))
+
+    conn.commit()
+    conn.close()
+
+    audit("FACTURA_SIAT_SUBIDA", "pedido", pedido_id, {"filename": filename, "cuf": cuf, "factura_nro": factura_nro})
+
+    return jsonify({"ok": True, "message": "Factura SIAT adjuntada y pedido marcado como facturado."})
+
+@app.route("/api/pedidos/<int:pedido_id>/factura_siat", methods=["GET"])
+@require_role("SUPER_ADMIN", "ADMIN")
+def api_descargar_factura_siat(pedido_id):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    blocked = forbid_if_not_owner(cur, pedido_id)
+    if blocked:
+        conn.close()
+        return blocked
+
+    cur.execute("""
+        SELECT filename, pdf
+        FROM pedido_factura_siat
+        WHERE pedido_id = %s
+    """, (pedido_id,))
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        return jsonify({"ok": False, "error": "No hay factura SIAT adjunta para este pedido"}), 404
+
+    filename = row[0] if isinstance(row, (list, tuple)) else row.get("filename")
+    pdf = row[1] if isinstance(row, (list, tuple)) else row.get("pdf")
+
+    buffer = BytesIO(bytes(pdf))
+    buffer.seek(0)
+
+    return send_file(
+        buffer,
+        as_attachment=False,
+        download_name=filename or f"factura_siat_{pedido_id}.pdf",
+        mimetype="application/pdf",
+    )
+
 
 @app.route('/api/empresas')
 @require_role("SUPER_ADMIN", "ADMIN")

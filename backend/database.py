@@ -124,5 +124,19 @@ def create_tables():
     );
     """)
 
+        # ===== FACTURA SIAT (PDF adjunto) =====
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS pedido_factura_siat (
+        pedido_id INTEGER PRIMARY KEY,
+        filename TEXT NOT NULL,
+        pdf BYTEA NOT NULL,
+        cuf TEXT,
+        factura_nro TEXT,
+        emitida_en TEXT,
+        uploaded_at TEXT NOT NULL
+    );
+    """)
+
+
     conn.commit()
     conn.close()
