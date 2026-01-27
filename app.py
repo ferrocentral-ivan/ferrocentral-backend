@@ -1621,106 +1621,146 @@ def generar_factura_pdf(pedido_id):
 
 
 @app.route("/api/reporte_facturados")
-@require_role("SUPER_ADMIN", "ADMIN")
-
 def reporte_facturados():
-    conn = get_connection()
-    cur = conn.cursor()
+    """PDF: Libro de ventas (pedidos facturados) en formato profesional."""
+    try:
+        with SessionLocal() as db:
+            rows = (
+                db.query(Pedido.fecha, Empresa.razon_social, Empresa.nit, Pedido.id, Pedido.total)
+                .join(Empresa, Pedido.empresa_id == Empresa.id)
+                .filter(Pedido.estado == "facturado")
+                .order_by(Pedido.fecha.desc())
+                .all()
+            )
 
-    role = session.get("role")
-    admin_id = session.get("admin_id")
+        buffer = BytesIO()
+        c = canvas.Canvas(buffer, pagesize=letter)
+        width, height = letter
 
-    if role == "ADMIN":
-        cur.execute("""
-        SELECT p.id, p.fecha, p.total,
-               e.razon_social, e.nit
-        FROM pedidos p
-        JOIN empresas e ON e.id = p.empresa_id
-        WHERE p.estado = 'facturado'
-          AND p.admin_id = %s
-        ORDER BY p.fecha ASC, p.id ASC
-        """, (admin_id,))
-    else:
-        cur.execute("""
-        SELECT p.id, p.fecha, p.total,
-               e.razon_social, e.nit
-        FROM pedidos p
-        JOIN empresas e ON e.id = p.empresa_id
-        WHERE p.estado = 'facturado'
-        ORDER BY p.fecha ASC, p.id ASC
-    """)
+        header_h = 55
+        margin_x = 40
+        margin_bottom = 45
 
-    rows = cur.fetchall()
-    conn.close()
+        def draw_header(page_num: int):
+            # Barra superior
+            c.setFillColor(colors.HexColor("#111827"))
+            c.rect(0, height - header_h, width, header_h, fill=1, stroke=0)
 
-    buffer = BytesIO()
-    c = canvas.Canvas(buffer, pagesize=letter)
-    width, height = letter
+            # Título
+            c.setFillColor(colors.white)
+            c.setFont("Helvetica-Bold", 16)
+            c.drawString(margin_x, height - 35, "LIBRO DE VENTAS - FACTURAS SIAT")
 
-    y = height - 40
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(40, y, "Libro de ventas - pedidos facturados")
-    y -= 25
+            # Fecha de generación (Bolivia)
+            c.setFont("Helvetica", 9)
+            now_bo = datetime.now(ZoneInfo("America/La_Paz"))
+            c.drawRightString(width - margin_x, height - 30, f"Generado: {now_bo.strftime('%Y-%m-%d %H:%M')}")
 
-    c.setFont("Helvetica-Bold", 9)
-    c.drawString(40,  y, "Fecha")
-    c.drawString(150, y, "Empresa")
-    c.drawString(360, y, "NIT")
-    c.drawString(430, y, "Pedido")
-    c.drawString(500, y, "Total (Bs)")
-    y -= 12
-    c.line(40, y, width - 40, y)
-    y -= 14
+            # Logo (igual que proforma)
+            try:
+                logo_url = "https://ferrocentral.com.bo/img/logos/logo_empresa.png"
+                with urlopen(logo_url, timeout=8) as resp:
+                    data = resp.read()
+                img = ImageReader(BytesIO(data))
+                c.drawImage(
+                    img,
+                    margin_x,
+                    height - header_h + 8,
+                    width=75,
+                    height=40,
+                    mask="auto",
+                    preserveAspectRatio=True
+                )
+            except Exception as e:
+                print("⚠️ Logo libro de ventas no cargado:", e)
 
-    c.setFont("Helvetica", 8)
+            # Subtítulo
+            c.setFillColor(colors.black)
+            c.setFont("Helvetica", 10)
+            c.drawString(margin_x, height - header_h - 18, f"Total facturas: {len(rows)}")
+            c.drawRightString(width - margin_x, height - header_h - 18, f"Página {page_num}")
 
-    for r in rows:
-        pid = r["id"]
-        fecha = r["fecha"]
-        total = r["total"]
-        razon = r.get("razon_social") or r.get("razon") or ""
-        nit = r.get("nit") or ""
+        def draw_table_header(y):
+            # Encabezado tabla
+            c.setFillColor(colors.HexColor("#F3F4F6"))
+            c.roundRect(margin_x, y - 18, width - 2 * margin_x, 22, 6, fill=1, stroke=0)
 
-    # fecha puede venir como datetime o string
-        fecha = r["fecha"]
-        fecha_str = fmt_fecha_bo(fecha)[:16]  # YYYY-MM-DD HH:MM (Bolivia)
-
-        if y < 60:
-            c.showPage()
+            c.setFillColor(colors.HexColor("#111827"))
             c.setFont("Helvetica-Bold", 9)
-            c.drawString(40,  height - 40, "Fecha")
-            c.drawString(150, height - 40, "Empresa")
-            c.drawString(360, height - 40, "NIT")
-            c.drawString(430, height - 40, "Pedido")
-            c.drawString(500, height - 40, "Total (Bs)")
-            y = height - 60
+            x = margin_x + 10
+            c.drawString(x, y - 12, "Fecha (BO)")
+            c.drawString(x + 120, y - 12, "Empresa")
+            c.drawString(x + 310, y - 12, "NIT")
+            c.drawString(x + 415, y - 12, "Pedido")
+            c.drawRightString(width - margin_x - 10, y - 12, "Total (Bs)")
+            return y - 28
+
+        def draw_footer():
+            c.setStrokeColor(colors.HexColor("#E5E7EB"))
+            c.line(margin_x, margin_bottom - 10, width - margin_x, margin_bottom - 10)
             c.setFont("Helvetica", 8)
+            c.setFillColor(colors.HexColor("#6B7280"))
+            c.drawString(margin_x, margin_bottom - 25, "Distribuidora FerroCentral • Libro de ventas (interno)")
+            c.drawRightString(width - margin_x, margin_bottom - 25, "ferrocentral.com.bo")
 
-        c.drawString(40,  y, fecha_str)
-        c.drawString(150, y, razon[:32])
-        c.drawString(360, y, str(nit))
-        c.drawString(430, y, str(pid))
-        safe_total = 0.0
-        try:
-            safe_total = float(total or 0)
-        except Exception:
-            safe_total = 0.0
+        # Render
+        page = 1
+        draw_header(page)
+        y = height - header_h - 40
+        y = draw_table_header(y)
 
-        c.drawRightString(width - 40, y, f"{safe_total:.2f}")
+        c.setFont("Helvetica", 9)
+        c.setFillColor(colors.black)
 
-        y -= 12
+        row_h = 18
+        alt = 0
+        for (fecha, razon, nit, pedido_id, total) in rows:
+            if y < margin_bottom + 35:
+                draw_footer()
+                c.showPage()
+                page += 1
+                draw_header(page)
+                y = height - header_h - 40
+                y = draw_table_header(y)
+                c.setFont("Helvetica", 9)
+                c.setFillColor(colors.black)
 
+            # Fondo alternado (bonito)
+            c.setFillColor(colors.HexColor("#FFFFFF" if alt % 2 == 0 else "#FAFAFB"))
+            c.roundRect(margin_x, y - 14, width - 2 * margin_x, row_h, 6, fill=1, stroke=0)
+            alt += 1
 
-    c.showPage()
-    c.save()
-    buffer.seek(0)
+            c.setFillColor(colors.black)
+            x = margin_x + 10
 
-    return send_file(
-        buffer,
-        as_attachment=False,
-        download_name="ventas_facturadas.pdf",
-        mimetype="application/pdf",
-    )
+            # ✅ Fecha/hora en Bolivia (sin +00)
+            try:
+                fstr = fmt_fecha_bo(fecha, with_seconds=False)
+            except Exception:
+                fstr = str(fecha)[:16]
+
+            c.drawString(x, y - 10, fstr)
+            c.drawString(x + 120, y - 10, (razon or "")[:28])
+            c.drawString(x + 310, y - 10, str(nit or "")[:15])
+            c.drawString(x + 415, y - 10, f"#{pedido_id}")
+            c.drawRightString(width - margin_x - 10, y - 10, f"{float(total):.2f}")
+
+            y -= row_h + 6
+
+        draw_footer()
+        c.save()
+
+        buffer.seek(0)
+        return send_file(
+            buffer,
+            as_attachment=False,
+            download_name="libro_ventas_facturados.pdf",
+            mimetype="application/pdf"
+        )
+    except Exception as e:
+        print("❌ Error en /api/reporte_facturados:", e)
+        return jsonify({"error": "No se pudo generar el libro de ventas"}), 500
+
 
 
 @app.route("/api/facturas", methods=["GET"])
