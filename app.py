@@ -1788,6 +1788,65 @@ def subir_factura_siat(pedido_id):
         traceback.print_exc()
         return jsonify(ok=False, error="Error interno al guardar la factura"), 500
 
+@app.route("/api/facturados")
+@require_role("SUPER_ADMIN", "ADMIN")
+def api_facturados():
+    conn = get_connection()
+    cur = conn.cursor()
+
+    role = session.get("role")
+    admin_id = session.get("admin_id")
+
+    if role == "ADMIN":
+        cur.execute("""
+            SELECT
+                p.id,
+                p.fecha,
+                p.total,
+                e.razon_social,
+                e.nit,
+                CASE WHEN fs.pedido_id IS NULL THEN FALSE ELSE TRUE END AS factura_pdf,
+                COALESCE(fs.factura_nro, '') AS factura_nro,
+                COALESCE(fs.cuf, '') AS cuf
+            FROM pedidos p
+            JOIN empresas e ON e.id = p.empresa_id
+            LEFT JOIN pedido_factura_siat fs ON fs.pedido_id = p.id
+            WHERE p.estado = 'facturado'
+              AND p.admin_id = %s
+            ORDER BY p.id DESC
+        """, (admin_id,))
+    else:
+        cur.execute("""
+            SELECT
+                p.id,
+                p.fecha,
+                p.total,
+                e.razon_social,
+                e.nit,
+                CASE WHEN fs.pedido_id IS NULL THEN FALSE ELSE TRUE END AS factura_pdf,
+                COALESCE(fs.factura_nro, '') AS factura_nro,
+                COALESCE(fs.cuf, '') AS cuf
+            FROM pedidos p
+            JOIN empresas e ON e.id = p.empresa_id
+            LEFT JOIN pedido_factura_siat fs ON fs.pedido_id = p.id
+            WHERE p.estado = 'facturado'
+            ORDER BY p.id DESC
+        """)
+
+    rows = cur.fetchall()
+    conn.close()
+
+    data = [dict(r) for r in rows]
+
+    # (opcional) mostrar fecha en hora Bolivia como en /api/pedidos
+    for r in data:
+        try:
+            r["fecha"] = fmt_fecha_bo(r.get("fecha"))
+        except Exception:
+            pass
+
+    return jsonify({"ok": True, "facturados": data})
+
 
 
 @app.route("/api/pedidos/<int:pedido_id>/factura_siat", methods=["GET"])
