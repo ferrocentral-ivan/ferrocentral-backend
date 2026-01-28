@@ -285,91 +285,6 @@ def fmt_fecha_bo(fecha):
     return dt_bo.strftime("%Y-%m-%d %H:%M:%S")
 
 
-# =======================
-# ENTREGAS: días hábiles + feriados (configurable por env)
-# =======================
-
-_DIAS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
-_MESES_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
-             "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
-
-def _holidays_set() -> set:
-    """
-    Lista de feriados en formato YYYY-MM-DD.
-    Configurable con env:
-      HOLIDAYS_BO="2026-01-01,2026-01-22,2026-02-16"
-    Si no existe, queda vacío (no rompe nada).
-    """
-    raw = os.environ.get("HOLIDAYS_BO", "").strip()
-    if not raw:
-        return set()
-    out = set()
-    for part in raw.split(","):
-        s = part.strip()
-        if s:
-            out.add(s)
-    return out
-
-def _is_business_day(d) -> bool:
-    # L-V y no feriado
-    if d.weekday() >= 5:
-        return False
-    return d.isoformat() not in _holidays_set()
-
-def _next_business_day(d):
-    # avanza hasta día hábil
-    while not _is_business_day(d):
-        d += timedelta(days=1)
-    return d
-
-def calcular_fecha_entrega(dias):
-    """
-    Suma 'dias' días hábiles (L-V), saltando feriados configurados.
-    Retorna ISO string YYYY-MM-DD.
-    """
-    fecha = datetime.now(BO_TZ).date()
-    dias_restantes = int(dias)
-
-    while dias_restantes > 0:
-        fecha += timedelta(days=1)
-        if _is_business_day(fecha):
-            dias_restantes -= 1
-
-    # Si por alguna razón cae en no hábil, empuja al siguiente hábil
-    fecha = _next_business_day(fecha)
-    return fecha.isoformat()
-
-def _fecha_humana(iso_yyyy_mm_dd: str) -> str:
-    """
-    "2026-01-29" -> "jueves 29 de enero"
-    """
-    try:
-        d = datetime.fromisoformat(iso_yyyy_mm_dd).date()
-    except Exception:
-        return iso_yyyy_mm_dd
-
-    dia = _DIAS_ES[d.weekday()]
-    mes = _MESES_ES[d.month - 1]
-    return f"{dia} {d.day} de {mes}"
-
-def _nota_entrega(iso_yyyy_mm_dd: str) -> str:
-    """
-    Nota elegante si la fecha fue empujada por no hábil/feriado.
-    (No afecta nada si no hay feriados configurados)
-    """
-    try:
-        d = datetime.fromisoformat(iso_yyyy_mm_dd).date()
-    except Exception:
-        return ""
-    if d.weekday() >= 5:
-        return "Entregas lun–vie. Se pasó al siguiente día hábil."
-    if d.isoformat() in _holidays_set():
-        return "La fecha cayó en feriado. Se pasó al siguiente día hábil."
-    return ""
-
-
-
-
 
 
 
@@ -762,20 +677,6 @@ def api_pedido():
     lat               = data.get("lat", None)
     lng               = data.get("lng", None)
 
-        # ✅ NUEVO: envío por zona
-    zona                 = data.get("zona", "") or ""
-    shipping_option      = data.get("shipping_option", "") or ""
-    shipping_fee         = data.get("shipping_fee", 0) or 0
-    delivery_date_promised = data.get("delivery_date_promised", "") or ""
-
-    # normalizar a número
-    try:
-        shipping_fee = float(shipping_fee)
-    except Exception:
-        shipping_fee = 0.0
-
-
-
     maps_url = ""
     try:
         if lat is not None and lng is not None:
@@ -802,28 +703,10 @@ def api_pedido():
 
     # Guardar el pedido
     cur.execute("""
-    INSERT INTO pedidos (
-        empresa_id, admin_id, fecha, total, estado, notas,
-        direccion_entrega, telefono, lat, lng, maps_url,
-        zona, shipping_option, shipping_fee, delivery_date_promised
-    )
-    VALUES (
-        %s, %s, %s, %s, 'pendiente', %s,
-        %s, %s, %s, %s, %s,
-        %s, %s, %s, %s
-    )
-    RETURNING id
-    """, (
-        empresa_id, admin_id, fecha, total, notas,
-        direccion_entrega, telefono, lat, lng, maps_url,
-        (request.json.get("zona") if request.is_json else None),
-        (request.json.get("shipping_option") if request.is_json else None),
-        (request.json.get("shipping_fee") if request.is_json else 0),
-        (request.json.get("delivery_date_promised") if request.is_json else None),
-    ))
-
-
-
+    INSERT INTO pedidos (empresa_id, admin_id, fecha, total, estado, notas, direccion_entrega, telefono, lat, lng, maps_url)
+VALUES (%s, %s, %s, %s, 'pendiente', %s, %s, %s, %s, %s, %s)
+RETURNING id
+""", (empresa_id, admin_id, fecha, total, notas, direccion_entrega, telefono, lat, lng, maps_url))
 
 
 
@@ -866,11 +749,6 @@ def api_pedido():
             "lat": lat,
             "lng": lng,
             "maps_url": maps_url,
-            "zona": zona,
-            "shipping_option": shipping_option,
-            "shipping_fee": float(shipping_fee),
-            "delivery_date_promised": delivery_date_promised,
-
 
         })
     except Exception as e:
@@ -891,18 +769,16 @@ def api_pedidos():
 
     if role == "ADMIN":
         cur.execute("""
-            SELECT p.id, p.fecha, p.total, p.estado, e.razon_social,
-                p.zona, p.shipping_option, p.shipping_fee, p.delivery_date_promised, p.delivery_status
+            SELECT p.id, p.fecha, p.total, p.estado, e.razon_social
             FROM pedidos p
             JOIN empresas e ON e.id = p.empresa_id
             WHERE p.estado NOT IN ('facturado', 'cancelado')
-            AND p.admin_id = %s
+              AND p.admin_id = %s
             ORDER BY p.id DESC
         """, (admin_id,))
     else:
         cur.execute("""
-            SELECT p.id, p.fecha, p.total, p.estado, e.razon_social,
-                p.zona, p.shipping_option, p.shipping_fee, p.delivery_date_promised, p.delivery_status
+            SELECT p.id, p.fecha, p.total, p.estado, e.razon_social
             FROM pedidos p
             JOIN empresas e ON e.id = p.empresa_id
             WHERE p.estado NOT IN ('facturado', 'cancelado')
@@ -964,11 +840,6 @@ def api_pedido_detalle(pedido_id):
                 p.lat,
                 p.lng,
                 p.maps_url,
-                p.zona,
-                p.shipping_option,
-                p.shipping_fee,
-                p.delivery_date_promised,
-                p.delivery_status,
                e.razon_social,
                e.nit,
                e.contacto,
@@ -2010,110 +1881,6 @@ def api_pedido_cambiar_estado(pedido_id):
 
     return jsonify({"ok": True, "estado": nuevo_estado})
 
-
-@app.post("/api/delivery/publicar")
-@require_role("SUPER_ADMIN", "ADMIN")
-def api_publicar_delivery():
-    data = request.json or {}
-    pedido_id = data.get("pedido_id")
-
-    if not pedido_id:
-        return jsonify({"ok": False, "error": "pedido_id requerido"}), 400
-
-    conn = get_connection()
-    cur = conn.cursor()
-
-    blocked = forbid_if_not_owner(cur, pedido_id)
-    if blocked:
-        conn.close()
-        return blocked
-
-    cur.execute("""
-        SELECT zona, shipping_fee, delivery_date_promised
-        FROM pedidos
-        WHERE id = %s
-    """, (pedido_id,))
-    p = cur.fetchone()
-
-    if not p:
-        conn.close()
-        return jsonify({"ok": False, "error": "Pedido no encontrado"}), 404
-
-    cur.execute("""
-        INSERT INTO delivery_tickets (
-            pedido_id, zona, fee, fecha_prometida, estado, created_at
-        )
-        VALUES (%s,%s,%s,%s,'ABIERTO',%s)
-        ON CONFLICT (pedido_id) DO NOTHING
-    """, (
-        pedido_id,
-        p["zona"],
-        p["shipping_fee"] or 0,
-        p["delivery_date_promised"],
-        datetime.utcnow().isoformat()
-    ))
-
-    cur.execute("""
-        UPDATE pedidos
-        SET delivery_status = 'PUBLICADO'
-        WHERE id = %s
-    """, (pedido_id,))
-
-    conn.commit()
-    conn.close()
-
-    return jsonify({"ok": True})
-
-
-@app.get("/api/delivery/tickets")
-def api_delivery_tickets():
-    conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT id, pedido_id, zona, fee, fecha_prometida
-        FROM delivery_tickets
-        WHERE estado = 'ABIERTO'
-        ORDER BY created_at ASC
-    """)
-    rows = cur.fetchall()
-    conn.close()
-
-    return jsonify({"ok": True, "tickets": [dict(r) for r in rows]})
-
-
-@app.post("/api/delivery/tickets/<int:ticket_id>/aceptar")
-def api_aceptar_ticket(ticket_id):
-    data = request.json or {}
-    nombre = (data.get("nombre") or "").strip()
-    telefono = (data.get("telefono") or "").strip()
-
-    if not nombre or not telefono:
-        return jsonify({"ok": False, "error": "Datos incompletos"}), 400
-
-    conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute("""
-        UPDATE delivery_tickets
-        SET estado='ASIGNADO',
-            driver_nombre=%s,
-            driver_telefono=%s
-        WHERE id=%s AND estado='ABIERTO'
-    """, (nombre, telefono, ticket_id))
-
-    if cur.rowcount == 0:
-        conn.close()
-        return jsonify({"ok": False, "error": "Ticket no disponible"}), 400
-
-    conn.commit()
-    conn.close()
-
-    return jsonify({"ok": True})
-
-
-
-
 @app.route("/api/pedidos/<int:pedido_id>/factura_siat", methods=["POST"])
 @require_role("SUPER_ADMIN", "ADMIN")
 def subir_factura_siat(pedido_id):
@@ -2449,171 +2216,7 @@ def serve_img(filename):
 
 # ---------------- RUTAS API ----------------
 
-@app.get("/api/envio/zonas")
-@require_role("EMPRESA")
-def api_envio_zonas():
-    conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT nombre
-        FROM delivery_zonas
-        WHERE activo = TRUE
-        ORDER BY nombre ASC
-    """)
-
-    zonas = [r["nombre"] for r in cur.fetchall()]
-    conn.close()
-
-    return jsonify({"ok": True, "zonas": zonas})
-
-
 from flask import make_response
-
-
-@app.get("/api/envio/opciones")
-@require_role("EMPRESA")
-def api_envio_opciones():
-    zona = (request.args.get("zona") or "").strip()
-    if not zona:
-        return jsonify({"ok": False, "error": "Zona requerida"}), 400
-
-    conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT *
-        FROM delivery_zonas
-        WHERE nombre = %s AND activo = TRUE
-    """, (zona,))
-
-    z = cur.fetchone()
-    conn.close()
-
-    if not z:
-        return jsonify({"ok": False, "error": "Zona no válida"}), 404
-
-    opciones = []
-
-    def add_op(code, label, fee, days):
-        fecha = calcular_fecha_entrega(days)
-        humano = _fecha_humana(fecha)
-        nota = _nota_entrega(fecha)
-
-                # Regla negocio: si la entrega es mayor a 4 días hábiles → envío gratis
-        try:
-            d_int = int(days)
-        except Exception:
-            d_int = 0
-
-        fee_final = float(fee)
-        label_final = label
-
-        if d_int > 4:
-            fee_final = 0.0
-            label_final = f"{label} (Gratis)"
-
-
-        opciones.append({
-            "code": code,
-            # Label listo para tu UI (tipo Amazon)
-            "label": f"{label_final} — Entrega {humano}",
-            "fee": float(fee_final),
-            "fecha_entrega": fecha,
-            # Extra (por si luego quieres mostrarlo más lindo)
-            "fecha_humana": humano,
-            "nota": nota
-        })
-
-
-    add_op("EXPRESS",     "Express",     z["express_fee"],     z["express_days"])
-    add_op("ESTANDAR",    "Estándar",    z["estandar_fee"],    z["estandar_days"])
-    add_op("PROGRAMADA",  "Programada",  z["programada_fee"],  z["programada_days"])
-    add_op("CONSOLIDADA", "Consolidada", z["consolidada_fee"], z["consolidada_days"])
-
-    return jsonify({
-        "ok": True,
-        "zona": zona,
-        "opciones": opciones
-    })
-
-# ==========================
-# ADMIN: Zonas y tarifas de envío
-# ==========================
-
-@app.get("/api/admin/envio/zonas")
-@require_role("SUPER_ADMIN", "ADMIN")
-def api_admin_envio_listar_zonas():
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT id, nombre,
-               express_fee, estandar_fee, programada_fee, consolidada_fee,
-               express_days, estandar_days, programada_days, consolidada_days,
-               activo
-        FROM delivery_zonas
-        ORDER BY nombre ASC
-    """)
-    rows = [dict(r) for r in cur.fetchall()]
-    conn.close()
-    return jsonify({"ok": True, "zonas": rows})
-
-
-@app.post("/api/admin/envio/zonas/<int:zona_id>")
-@require_role("SUPER_ADMIN", "ADMIN")
-def api_admin_envio_actualizar_zona(zona_id):
-    data = request.get_json(force=True) or {}
-
-    def num(v, default):
-        try:
-            return float(v)
-        except Exception:
-            return float(default)
-
-    def intnum(v, default):
-        try:
-            return int(v)
-        except Exception:
-            return int(default)
-
-    payload = {
-        "express_fee":      num(data.get("express_fee"), 25),
-        "estandar_fee":     num(data.get("estandar_fee"), 15),
-        "programada_fee":   num(data.get("programada_fee"), 10),
-        "consolidada_fee":  num(data.get("consolidada_fee"), 0),
-        "express_days":     intnum(data.get("express_days"), 1),
-        "estandar_days":    intnum(data.get("estandar_days"), 2),
-        "programada_days":  intnum(data.get("programada_days"), 4),
-        "consolidada_days": intnum(data.get("consolidada_days"), 6),
-        "activo":           bool(data.get("activo", True)),
-    }
-
-    conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute("""
-        UPDATE delivery_zonas
-        SET express_fee=%s, estandar_fee=%s, programada_fee=%s, consolidada_fee=%s,
-            express_days=%s, estandar_days=%s, programada_days=%s, consolidada_days=%s,
-            activo=%s
-        WHERE id=%s
-    """, (
-        payload["express_fee"], payload["estandar_fee"], payload["programada_fee"], payload["consolidada_fee"],
-        payload["express_days"], payload["estandar_days"], payload["programada_days"], payload["consolidada_days"],
-        payload["activo"],
-        zona_id
-    ))
-
-    if cur.rowcount == 0:
-        conn.close()
-        return jsonify({"ok": False, "error": "Zona no encontrada"}), 404
-
-    conn.commit()
-    audit("ENVIO_ZONA_UPDATE", "delivery_zonas", zona_id, payload)
-    conn.close()
-
-    return jsonify({"ok": True})
-
 
 
 @app.route("/api/productos_precios.json", methods=["GET"])
@@ -3078,48 +2681,6 @@ ALLOWED_EXCEL_EXT = {".xlsx", ".xlsm", ".xls"}
 
 def _ext_of(filename: str) -> str:
     return os.path.splitext(filename or "")[1].lower()
-
-
-
-
-def _today_ymd():
-    return datetime.now().date()
-
-def _add_business_days(start_date, days, holidays=None):
-    holidays = set(holidays or [])
-    d = start_date
-    added = 0
-    while added < days:
-        d = d + timedelta(days=1)
-        # 0=Mon ... 6=Sun
-        if d.weekday() >= 5:
-            continue
-        if d.isoformat() in holidays:
-            continue
-        added += 1
-    return d
-
-def _format_delivery_date(date_obj):
-    # Ej: "Mié 29 Ene" (bonito y corto)
-    meses = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"]
-    dias  = ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"]
-    return f"{dias[date_obj.weekday()]} {date_obj.day:02d} {meses[date_obj.month-1]}"
-
-def _get_holidays():
-    """
-    Opcional: variable env HOLIDAYS_YMD_JSON = '["2026-01-01","2026-01-22"]'
-    Si no existe, no bloquea nada.
-    """
-    raw = os.environ.get("HOLIDAYS_YMD_JSON", "").strip()
-    if not raw:
-        return []
-    try:
-        return json.loads(raw)
-    except Exception:
-        return []
-
-
-
 
 @app.route("/api/admin/precios/upload-excel", methods=["POST"])
 @require_role("SUPER_ADMIN")

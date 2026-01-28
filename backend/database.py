@@ -73,13 +73,6 @@ def create_tables():
     );
     """)
 
-        # ✅ NUEVO: columnas para envío por zona (si la tabla ya existía, esto las agrega)
-    cur.execute("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS zona TEXT;")
-    cur.execute("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS shipping_option TEXT;")
-    cur.execute("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS shipping_fee DOUBLE PRECISION DEFAULT 0;")
-    cur.execute("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS delivery_date_promised TEXT;")
-
-
         # ===== ITEMS =====
     cur.execute("""
     CREATE TABLE IF NOT EXISTS pedido_items (
@@ -143,91 +136,6 @@ def create_tables():
         uploaded_at TEXT NOT NULL
     );
     """)
-
-    cur.execute("""
-    ALTER TABLE pedidos
-    ADD COLUMN IF NOT EXISTS zona TEXT,
-    ADD COLUMN IF NOT EXISTS shipping_option TEXT,
-    ADD COLUMN IF NOT EXISTS shipping_fee DOUBLE PRECISION DEFAULT 0,
-    ADD COLUMN IF NOT EXISTS delivery_date_promised TEXT,
-    ADD COLUMN IF NOT EXISTS delivery_status TEXT DEFAULT 'NO_PUBLICADO',
-    ADD COLUMN IF NOT EXISTS delivery_ticket_id INTEGER;
-    """)
-
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS delivery_zonas (
-        id SERIAL PRIMARY KEY,
-        nombre TEXT UNIQUE NOT NULL,
-        express_fee DOUBLE PRECISION NOT NULL DEFAULT 25,
-        estandar_fee DOUBLE PRECISION NOT NULL DEFAULT 15,
-        programada_fee DOUBLE PRECISION NOT NULL DEFAULT 10,
-        consolidada_fee DOUBLE PRECISION NOT NULL DEFAULT 0,
-        express_days INTEGER NOT NULL DEFAULT 1,
-        estandar_days INTEGER NOT NULL DEFAULT 2,
-        programada_days INTEGER NOT NULL DEFAULT 4,
-        consolidada_days INTEGER NOT NULL DEFAULT 6,
-        activo BOOLEAN NOT NULL DEFAULT TRUE
-    );
-    """)
-
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS delivery_tickets (
-        id SERIAL PRIMARY KEY,
-        pedido_id INTEGER UNIQUE NOT NULL,
-        zona TEXT NOT NULL,
-        fee DOUBLE PRECISION NOT NULL,
-        fecha_prometida TEXT,
-        estado TEXT NOT NULL DEFAULT 'ABIERTO',
-        driver_nombre TEXT,
-        driver_telefono TEXT,
-        created_at TEXT NOT NULL
-    );
-    """)
-
-
-    zonas = [
-        "Centro",
-        "Zona Norte",
-        "Zona Sur",
-        "Zona Oeste",
-        "Zona Este",
-        "Tiquipaya",
-        "Quillacollo",
-        "Colcapirhua",
-        "Vinto",
-        "Sacaba"
-    ]
-
-    for z in zonas:
-        cur.execute(
-            "INSERT INTO delivery_zonas (nombre) VALUES (%s) ON CONFLICT (nombre) DO NOTHING",
-            (z,)
-        )
-
-
-
-    # Seed inicial (solo si no existen)
-    cur.execute("""
-    INSERT INTO envio_zonas (nombre, express_fee, express_days, estandar_fee, estandar_days, programada_fee, programada_days, consolidada_fee, consolidada_days, activo)
-    VALUES
-      ('Centro',      15, 1, 10, 2,  7, 3, 0, 4, TRUE),
-      ('Norte',       18, 1, 12, 2,  8, 3, 0, 4, TRUE),
-      ('Sur',         20, 1, 13, 2,  9, 3, 0, 4, TRUE),
-      ('Tiquipaya',   22, 1, 15, 2, 10, 3, 0, 4, TRUE),
-      ('Quillacollo', 25, 1, 18, 2, 12, 3, 0, 4, TRUE),
-      ('Sacaba',      25, 1, 18, 2, 12, 3, 0, 4, TRUE)
-    ON CONFLICT (nombre) DO NOTHING;
-    """)
-
-    # ===== PEDIDOS: columnas nuevas (si no existen) =====
-    _try(cur, "ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS zona TEXT;")
-    _try(cur, "ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS shipping_option TEXT;")
-    _try(cur, "ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS shipping_fee DOUBLE PRECISION DEFAULT 0;")
-    _try(cur, "ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS delivery_date_promised TEXT;")
-
-
 
 
     conn.commit()
