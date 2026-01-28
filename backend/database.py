@@ -208,6 +208,25 @@ def create_tables():
 
 
 
+    # Seed inicial (solo si no existen)
+    cur.execute("""
+    INSERT INTO envio_zonas (nombre, express_fee, express_days, estandar_fee, estandar_days, programada_fee, programada_days, consolidada_fee, consolidada_days, activo)
+    VALUES
+      ('Centro',      15, 1, 10, 2,  7, 3, 0, 4, TRUE),
+      ('Norte',       18, 1, 12, 2,  8, 3, 0, 4, TRUE),
+      ('Sur',         20, 1, 13, 2,  9, 3, 0, 4, TRUE),
+      ('Tiquipaya',   22, 1, 15, 2, 10, 3, 0, 4, TRUE),
+      ('Quillacollo', 25, 1, 18, 2, 12, 3, 0, 4, TRUE),
+      ('Sacaba',      25, 1, 18, 2, 12, 3, 0, 4, TRUE)
+    ON CONFLICT (nombre) DO NOTHING;
+    """)
+
+    # ===== PEDIDOS: columnas nuevas (si no existen) =====
+    _try(cur, "ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS zona TEXT;")
+    _try(cur, "ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS shipping_option TEXT;")
+    _try(cur, "ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS shipping_fee DOUBLE PRECISION DEFAULT 0;")
+    _try(cur, "ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS delivery_date_promised TEXT;")
+
 
 
 

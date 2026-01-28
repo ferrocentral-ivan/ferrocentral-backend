@@ -807,15 +807,21 @@ def api_pedido():
         direccion_entrega, telefono, lat, lng, maps_url,
         zona, shipping_option, shipping_fee, delivery_date_promised
     )
-    VALUES (%s, %s, %s, %s, 'pendiente', %s,
-            %s, %s, %s, %s, %s,
-            %s, %s, %s, %s)
+    VALUES (
+        %s, %s, %s, %s, 'pendiente', %s,
+        %s, %s, %s, %s, %s,
+        %s, %s, %s, %s
+    )
     RETURNING id
     """, (
         empresa_id, admin_id, fecha, total, notas,
         direccion_entrega, telefono, lat, lng, maps_url,
-        zona, shipping_option, shipping_fee, delivery_date_promised
+        (request.json.get("zona") if request.is_json else None),
+        (request.json.get("shipping_option") if request.is_json else None),
+        (request.json.get("shipping_fee") if request.is_json else 0),
+        (request.json.get("delivery_date_promised") if request.is_json else None),
     ))
+
 
 
 
@@ -2494,11 +2500,25 @@ def api_envio_opciones():
         humano = _fecha_humana(fecha)
         nota = _nota_entrega(fecha)
 
+                # Regla negocio: si la entrega es mayor a 4 días hábiles → envío gratis
+        try:
+            d_int = int(days)
+        except Exception:
+            d_int = 0
+
+        fee_final = float(fee)
+        label_final = label
+
+        if d_int > 4:
+            fee_final = 0.0
+            label_final = f"{label} (Gratis)"
+
+
         opciones.append({
             "code": code,
             # Label listo para tu UI (tipo Amazon)
-            "label": f"{label} — Entrega {humano}",
-            "fee": float(fee),
+            "label": f"{label_final} — Entrega {humano}",
+            "fee": float(fee_final),
             "fecha_entrega": fecha,
             # Extra (por si luego quieres mostrarlo más lindo)
             "fecha_humana": humano,
@@ -3058,6 +3078,48 @@ ALLOWED_EXCEL_EXT = {".xlsx", ".xlsm", ".xls"}
 
 def _ext_of(filename: str) -> str:
     return os.path.splitext(filename or "")[1].lower()
+
+
+
+
+def _today_ymd():
+    return datetime.now().date()
+
+def _add_business_days(start_date, days, holidays=None):
+    holidays = set(holidays or [])
+    d = start_date
+    added = 0
+    while added < days:
+        d = d + timedelta(days=1)
+        # 0=Mon ... 6=Sun
+        if d.weekday() >= 5:
+            continue
+        if d.isoformat() in holidays:
+            continue
+        added += 1
+    return d
+
+def _format_delivery_date(date_obj):
+    # Ej: "Mié 29 Ene" (bonito y corto)
+    meses = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"]
+    dias  = ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"]
+    return f"{dias[date_obj.weekday()]} {date_obj.day:02d} {meses[date_obj.month-1]}"
+
+def _get_holidays():
+    """
+    Opcional: variable env HOLIDAYS_YMD_JSON = '["2026-01-01","2026-01-22"]'
+    Si no existe, no bloquea nada.
+    """
+    raw = os.environ.get("HOLIDAYS_YMD_JSON", "").strip()
+    if not raw:
+        return []
+    try:
+        return json.loads(raw)
+    except Exception:
+        return []
+
+
+
 
 @app.route("/api/admin/precios/upload-excel", methods=["POST"])
 @require_role("SUPER_ADMIN")
