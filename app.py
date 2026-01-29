@@ -2659,7 +2659,12 @@ def auth_me():
         try:
             conn = get_connection()
             cur = conn.cursor()
-            cur.execute("SELECT id, correo, nit, razon_social FROM empresas WHERE id = %s", (session["empresa_id"],))
+            cur.execute("""
+                SELECT id, correo, nit, razon_social,
+                    COALESCE(descuento, 0) AS descuento
+                FROM empresas
+                WHERE id = %s
+            """, (session["empresa_id"],))
             emp = cur.fetchone()
             conn.close()
             if emp:
@@ -2667,7 +2672,8 @@ def auth_me():
                     "id": emp["id"],
                     "correo": emp["correo"],
                     "nit": emp["nit"],
-                    "razon_social": emp.get("razon_social") or ""
+                    "razon_social": emp.get("razon_social") or "",
+                    "descuento": float(emp.get("descuento") or 0)
                 }
         except Exception:
             pass
