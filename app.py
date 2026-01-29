@@ -453,6 +453,8 @@ try:
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("ALTER TABLE pedido_items ADD COLUMN IF NOT EXISTS precio_final DOUBLE PRECISION")
+    cur.execute("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS tipo TEXT DEFAULT 'pedido'")
+    cur.execute("UPDATE pedidos SET tipo='pedido' WHERE tipo IS NULL")
     conn.commit()
     conn.close()
 
@@ -671,6 +673,9 @@ def api_pedido():
     total      = data.get("total")
     notas      = data.get("notas", "")
     items      = data.get("items", [])
+    tipo = (data.get("tipo") or "pedido").strip().lower()
+    if tipo not in ("pedido", "cotizacion"):
+        tipo = "pedido"
 
     direccion_entrega = data.get("direccion_entrega", "")
     telefono          = data.get("telefono", "")
@@ -703,10 +708,10 @@ def api_pedido():
 
     # Guardar el pedido
     cur.execute("""
-    INSERT INTO pedidos (empresa_id, admin_id, fecha, total, estado, notas, direccion_entrega, telefono, lat, lng, maps_url)
-VALUES (%s, %s, %s, %s, 'pendiente', %s, %s, %s, %s, %s, %s)
+    INSERT INTO pedidos (empresa_id, admin_id, fecha, total, estado, notas, tipo, direccion_entrega, telefono, lat, lng, maps_url)
+VALUES (%s, %s, %s, %s, 'pendiente', %s, %s, %s, %s, %s, %s, %s)
 RETURNING id
-""", (empresa_id, admin_id, fecha, total, notas, direccion_entrega, telefono, lat, lng, maps_url))
+""", (empresa_id, admin_id, fecha, total, notas, tipo, direccion_entrega, telefono, lat, lng, maps_url))
 
 
 
@@ -749,6 +754,7 @@ RETURNING id
             "lat": lat,
             "lng": lng,
             "maps_url": maps_url,
+            "tipo": tipo,
 
         })
     except Exception as e:
@@ -769,7 +775,7 @@ def api_pedidos():
 
     if role == "ADMIN":
         cur.execute("""
-            SELECT p.id, p.fecha, p.total, p.estado, e.razon_social
+            SELECT p.id, p.fecha, p.total, p.estado, e.razon_social, COALESCE(p.tipo, 'pedido') AS tipo
             FROM pedidos p
             JOIN empresas e ON e.id = p.empresa_id
             WHERE p.estado NOT IN ('facturado', 'cancelado')
@@ -778,7 +784,7 @@ def api_pedidos():
         """, (admin_id,))
     else:
         cur.execute("""
-            SELECT p.id, p.fecha, p.total, p.estado, e.razon_social
+            SELECT p.id, p.fecha, p.total, p.estado, e.razon_social, COALESCE(p.tipo, 'pedido') AS tipo
             FROM pedidos p
             JOIN empresas e ON e.id = p.empresa_id
             WHERE p.estado NOT IN ('facturado', 'cancelado')
@@ -831,6 +837,7 @@ def api_pedido_detalle(pedido_id):
     # Cabecera del pedido + empresa
     cur.execute("""
         SELECT p.id,
+               COALESCE(p.tipo, 'pedido') AS tipo,
                p.fecha,
                p.total,
                p.estado,
