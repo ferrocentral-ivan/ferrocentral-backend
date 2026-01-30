@@ -84,7 +84,7 @@ app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
 
 
 @app.route("/health")
-def health():
+def health_check():
     return {"status": "healthy"}
 
 
@@ -477,7 +477,7 @@ except Exception as e:
 # ---------------- RUTAS DE PÁGINAS ----------------
 
 @app.route("/")
-def health():
+def api_root():
     return {"status": "ok", "service": "FerroCentral API"}
 
 
@@ -571,7 +571,7 @@ def api_audit():
     return jsonify({"ok": True, "logs": [dict(r) for r in rows]})
 
 
-@app.route('/')
+@app.route('/inicio.html')
 def inicio():
     return send_from_directory('.', 'inicio.html')
 
@@ -2875,7 +2875,7 @@ def api_actualizar_precios():
         r.setdefault("rows", r.get("filas_excel_validas"))
         r.setdefault("discount", r.get("descuento_proveedor"))
 
-        # Si el admin.html usamos estos nombres en español, también los dejamos
+        # Si el admin.html use estos nombres en español, también los dejamos
         r.setdefault("filas_excel", r.get("filas_excel_validas"))
         r.setdefault("descuento", r.get("descuento_proveedor"))
         r.setdefault("nuevos", r.get("nuevos") if r.get("nuevos") is not None else len(r.get("nuevos_codigos") or []))
