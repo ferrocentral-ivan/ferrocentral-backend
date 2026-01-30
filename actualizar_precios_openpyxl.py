@@ -155,7 +155,7 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
             "usd_price_unit": usd_u,
         }
 
-    # ===== 2) Conectar BD + asegurar tablas/columnas (seguro, no rompe nada) =====
+    # ===== 2) Conectar BD + asegurar tablas/columnas =====
     conn = get_connection()
     cur = conn.cursor()
 
@@ -168,7 +168,7 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
         )
     """)
 
-    # Asegurar columnas de overrides (si ya existen, no pasa nada)
+    # Asegurar columnas de overrides 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS producto_overrides (
             code TEXT PRIMARY KEY,
@@ -225,7 +225,7 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
             actualizados += 1
 
         else:
-            # ---- NUEVO ----
+            
             nuevos_codigos.append(code)
             nuevos_detalle.append({
                 "code": code,
@@ -246,7 +246,7 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
 
             new_params.append((code, json.dumps(pnew, ensure_ascii=False), now))
 
-            # placeholder + etiqueta NUEVO (no pisa si ya existe override)
+            # placeholder + etiqueta NUEVO 
             override_params.append((code, "img/nuevo.jpg", "NUEVO"))
 
         # ===== flush por lotes =====

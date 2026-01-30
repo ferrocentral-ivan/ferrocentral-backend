@@ -65,11 +65,11 @@ app = Flask(__name__, static_folder='.', static_url_path='')
 # ==== COOKIES / SESSION (PROD) ====
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY")  # Render ENV
 
-# ✅ Cookie compartida por subdominios (ferrocentral.com.bo y api.ferrocentral.com.bo)
+#  Cookie compartida por subdominios (ferrocentral.com.bo y api.ferrocentral.com.bo)
 app.config["SESSION_COOKIE_DOMAIN"] = "ferrocentral.com.bo"
 
 
-# ✅ IMPORTANTE: como tu front y tu api comparten el mismo dominio base,
+#  IMPORTANTE: como mi front y mi api comparten el mismo dominio base,
 # NO necesitas SameSite=None. Lax es más estable en Chrome/Edge.
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
@@ -350,7 +350,7 @@ def require_role(*roles):
         return wrapper
     return deco
 
-# 🔒 Verifica que un ADMIN solo acceda a pedidos propios
+#  Verifica que un ADMIN solo acceda a pedidos propios
 def forbid_if_not_owner(cur, pedido_id: int):
     role = session.get("role")
     if role != "ADMIN":
@@ -392,7 +392,7 @@ def audit(action: str, entity: str, entity_id=None, payload=None):
 
 
 
-# ✅ Inicialización (NO tumbar el servidor si la DB falla)
+#  Inicialización (NO tumbar el servidor si la DB falla)
 
 def seed_catalogo_from_json_if_empty():
     """
@@ -475,6 +475,10 @@ except Exception as e:
 
 
 # ---------------- RUTAS DE PÁGINAS ----------------
+
+@app.route("/")
+def health():
+    return {"status": "ok", "service": "FerroCentral API"}
 
 
 
@@ -805,7 +809,7 @@ def api_pedidos():
     rows = cur.fetchall()
     conn.close()
 
-    # ✅ Ajustar fecha a hora Bolivia SOLO para mostrar en el panel
+    #  Ajustar fecha a hora Bolivia SOLO para mostrar en el panel
     for r in rows:
         try:
             r["fecha"] = fmt_fecha_bo(r.get("fecha"))
@@ -947,7 +951,7 @@ def api_pedido_detalle(pedido_id):
         }), 404
     
     
-    # ✅ Ajustar fecha a hora Bolivia también en el DETALLE
+    #  Ajustar fecha a hora Bolivia también en el DETALLE
     try:
         header["fecha"] = fmt_fecha_bo(header.get("fecha"))
     except Exception:
@@ -1034,7 +1038,7 @@ def api_pedido_actualizar_cotizacion(pedido_id):
             if precio_final < 0:
                 precio_final = 0.0
 
-            # ✅ Guardar precio_final SIN pisar el precio web (precio_unit)
+            #  Guardar precio_final SIN pisar el precio web (precio_unit)
             cur.execute("""
                 UPDATE pedido_items
                 SET cantidad=%s,
@@ -1090,7 +1094,7 @@ def proforma_pdf(pedido_id):
         conn.close()
         return blocked
 
-    # 1) Traer cabecera pedido + empresa
+    # 1 Traer cabecera pedido + empresa
     cur.execute("""
         SELECT p.id, p.fecha, p.total, p.estado, p.notas,
                e.razon_social, e.nit, e.contacto, e.telefono, e.correo,
@@ -1113,7 +1117,7 @@ def proforma_pdf(pedido_id):
     e_correo = row.get("correo") or ""
     e_desc = float(row.get("descuento") or 0)
 
-    # 2) Traer items (si existe precio_final úsalo)
+    # 2 Traer items (si existe precio_final úsalo)
     try:
         cur.execute("""
             SELECT descripcion, cantidad, precio_unit, precio_final
@@ -1185,8 +1189,8 @@ def proforma_pdf(pedido_id):
             img_source,
             25,                 # X: izquierda
             height - (header_h + 115),
-            width=195,          # ajusta SOLO tamaño si quieres
-            height=140,          # ajusta SOLO tamaño si quieres
+            width=195,          # aqui se ajusta SOLO tamaño si quiero
+            height=140,          # ajusta SOLO tamaño si quiero
             preserveAspectRatio=True,
             mask="auto",
         )
@@ -1450,8 +1454,8 @@ def proforma_pdf(pedido_id):
     box_x = col_pbase
     box_w = xR - box_x
 
-    red_bar = colors.HexColor("#e53935")   # mismo rojo del header
-    soft_bg = colors.HexColor("#fff5f5")   # fondo suave
+    red_bar = colors.HexColor("#e53935")   
+    soft_bg = colors.HexColor("#fff5f5")   
     grid    = colors.HexColor("#d9d9d9")
 
     # Caja principal
@@ -2553,11 +2557,11 @@ def debug_session():
 def api_productos():
     base_dir = os.path.dirname(os.path.abspath(__file__))
 
-    # si tu archivo se llama productos_precios.json, déjalo así:
+    
     path = os.path.join(base_dir, "productos_precios.json")
 
     if not os.path.exists(path):
-        # fallback por si tu archivo se llama distinto
+        
         alt = os.path.join(base_dir, "productos_precios")
         if os.path.exists(alt):
             path = alt
@@ -2567,7 +2571,7 @@ def api_productos():
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    # Para no reventar el navegador, devolvemos solo 50 primero
+   
     items = data[:50] if isinstance(data, list) else data
 
     return jsonify({"ok": True, "total": len(data) if isinstance(data, list) else None, "items": items})
@@ -2621,7 +2625,7 @@ def auth_login():
     data = request.json or {}
     usuario = (data.get("usuario") or "").strip()
     password = (data.get("password") or "").strip()
-    tipo = (data.get("tipo") or "empresa").strip()  # empresa | admin
+    tipo = (data.get("tipo") or "empresa").strip() 
 
     if not usuario or not password:
         return jsonify({"ok": False, "error": "Faltan datos"}), 400
@@ -2871,7 +2875,7 @@ def api_actualizar_precios():
         r.setdefault("rows", r.get("filas_excel_validas"))
         r.setdefault("discount", r.get("descuento_proveedor"))
 
-        # Si tu admin.html usa estos nombres en español, también los dejamos
+        # Si el admin.html usamos estos nombres en español, también los dejamos
         r.setdefault("filas_excel", r.get("filas_excel_validas"))
         r.setdefault("descuento", r.get("descuento_proveedor"))
         r.setdefault("nuevos", r.get("nuevos") if r.get("nuevos") is not None else len(r.get("nuevos_codigos") or []))
