@@ -453,6 +453,17 @@ try:
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("ALTER TABLE pedido_items ADD COLUMN IF NOT EXISTS precio_final DOUBLE PRECISION")
+    # --- MIGRACIÓN SEGURA: tabla para assets (QR bancario, etc.) ---
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS app_assets (
+    key TEXT PRIMARY KEY,
+    mime TEXT,
+    data BYTEA,
+    sha256 TEXT,
+    updated_at TIMESTAMP DEFAULT NOW()
+    )
+    """)
+
     cur.execute("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS tipo TEXT DEFAULT 'pedido'")
     cur.execute("UPDATE pedidos SET tipo='pedido' WHERE tipo IS NULL")
     conn.commit()
@@ -803,6 +814,72 @@ def api_pedidos():
 
 
     return jsonify({"ok": True, "pedidos": [dict(r) for r in rows]})
+
+# =========================
+# QR BANCARIO (IMAGEN REAL)
+# =========================
+
+@app.route('/api/public/qr-banco')
+def api_public_qr_banco():
+    """Devuelve la imagen del QR bancario actual (solo lectura, público)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT mime, data FROM app_assets WHERE key='bank_qr' LIMIT 1")
+    row = cur.fetchone()
+    conn.close()
+
+    if not row or not row[1]:
+        return ("QR no configurado", 404)
+
+    mime, data = row[0] or "image/png", row[1]
+    resp = send_file(BytesIO(data), mimetype=mime, download_name="qr-banco.png", conditional=False)
+    # Evitar cache para que cuando cambies el QR se vea al instante
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
+
+
+@app.route('/api/admin/qr-banco', methods=['POST'])
+@require_role("SUPER_ADMIN", "ADMIN")
+def api_admin_qr_banco_upload():
+    """Sube/actualiza el QR bancario (solo ADMIN/SUPER_ADMIN)."""
+    f = request.files.get("file") or request.files.get("qr")
+    if not f:
+        return jsonify({"ok": False, "error": "Falta archivo (field 'file' o 'qr')."}), 400
+
+    # Validar tipo (aceptamos fotos del celular también)
+    mime = (f.mimetype or "").lower()
+    if mime not in ("image/png", "image/jpeg", "image/jpg", "image/webp"):
+        return jsonify({"ok": False, "error": "Formato no válido. Usa PNG/JPG/WEBP."}), 400
+
+    data = f.read()
+    if not data or len(data) < 200:
+        return jsonify({"ok": False, "error": "Imagen vacía o inválida."}), 400
+
+    # límite de tamaño (2MB)
+    if len(data) > 2_000_000:
+        return jsonify({"ok": False, "error": "Imagen muy grande (máx 2MB)."}), 400
+
+    sha = hashlib.sha256(data).hexdigest()
+    now = datetime.utcnow()
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO app_assets (key, mime, data, sha256, updated_at)
+        VALUES ('bank_qr', %s, %s, %s, %s)
+        ON CONFLICT (key)
+        DO UPDATE SET mime=EXCLUDED.mime,
+                      data=EXCLUDED.data,
+                      sha256=EXCLUDED.sha256,
+                      updated_at=EXCLUDED.updated_at
+    """, (mime, psycopg2.Binary(data) if "psycopg2" in globals() else data, sha, now))
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({"ok": True, "sha256": sha, "updated_at": now.isoformat()})
+
 
 
 @app.route("/api/pedidos_json")
