@@ -885,6 +885,99 @@ def api_admin_qr_banco_upload():
     return jsonify({"ok": True, "sha256": sha, "updated_at": now.isoformat()})
 
 
+# =========================================================
+# Teleprompter (aviso giratorio) - settings aislado
+# =========================================================
+
+def _ensure_site_settings_table():
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS site_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def _get_setting(key: str, default: str = "") -> str:
+    _ensure_site_settings_table()
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT value FROM site_settings WHERE key=%s", (key,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return default
+    # row puede venir como tuple o dict según cursor
+    if isinstance(row, dict):
+        return row.get("value", default)
+    return row[0] if row[0] is not None else default
+
+def _set_setting(key: str, value: str):
+    _ensure_site_settings_table()
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO site_settings(key,value)
+        VALUES(%s,%s)
+        ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value
+    """, (key, value))
+    conn.commit()
+    conn.close()
+
+@app.route("/api/public/teleprompter", methods=["GET"])
+def api_public_teleprompter():
+    """
+    Público: devuelve el aviso del teleprompter para inicio.html.
+    items: lista de frases (separadas por |)
+    """
+    active = _get_setting("teleprompter_active", "1")
+    raw = _get_setting("teleprompter_items", "")
+
+    if not raw.strip():
+        # Si no hay nada guardado, devolvemos ok=false para que el front use el fallback hardcodeado
+        return jsonify({"ok": False, "error": "No configurado"}), 200
+
+    items = [x.strip() for x in raw.split("|") if x.strip()]
+    return jsonify({
+        "ok": True,
+        "active": (active != "0"),
+        "items": items
+    }), 200
+
+@app.route("/api/admin/teleprompter", methods=["PUT"])
+@require_role("SUPER_ADMIN")
+def api_admin_teleprompter_update():
+    """
+    Admin (solo SUPER_ADMIN): guarda el aviso.
+    Body JSON:
+      { "active": true/false, "items": ["frase 1", "frase 2", ...] }
+    """
+    payload = request.get_json(silent=True) or {}
+    active = payload.get("active", True)
+    items = payload.get("items", [])
+
+    if not isinstance(items, list):
+        return jsonify({"ok": False, "error": "items debe ser una lista"}), 400
+
+    # Sanitizar
+    clean = []
+    for it in items:
+        s = str(it or "").strip()
+        if s:
+            clean.append(s)
+
+    if not clean:
+        return jsonify({"ok": False, "error": "Escribe al menos 1 frase"}), 400
+
+    _set_setting("teleprompter_active", "1" if active else "0")
+    _set_setting("teleprompter_items", " | ".join(clean))
+
+    return jsonify({"ok": True}), 200
+
+
 
 @app.route("/api/pedidos_json")
 @require_role("SUPER_ADMIN", "ADMIN")
