@@ -2383,11 +2383,30 @@ def api_catalogo():
     """
     Devuelve TODO el catálogo para la tienda.
     FUENTE DE VERDAD: PostgreSQL (tabla productos_catalogo).
-    Fallback: si la tabla está vacía, usa productos_precios.json (solo para no romper).
+    Fallback: productos_precios.json (solo para no romper).
+    Optimización: ETag + Cache-Control para que no descargue 7000+ productos cada vez.
     """
-    import json
-    import os
-    from flask import jsonify, make_response
+    import json, os, hashlib
+    from flask import request, Response, jsonify
+
+    def _make_etag_response(data_list):
+        # JSON estable (misma salida = mismo ETag)
+        body = json.dumps(data_list, ensure_ascii=False, separators=(",", ":"))
+        etag = hashlib.md5(body.encode("utf-8")).hexdigest()
+        etag_hdr = f"\"{etag}\""  # formato estándar con comillas
+
+        inm = (request.headers.get("If-None-Match") or "").strip()
+        if inm == etag_hdr:
+            # No cambió → 304 (cero descarga)
+            resp = Response(status=304)
+            resp.headers["ETag"] = etag_hdr
+            resp.headers["Cache-Control"] = "public, max-age=600"  # 10 min
+            return resp
+
+        resp = Response(body, mimetype="application/json")
+        resp.headers["ETag"] = etag_hdr
+        resp.headers["Cache-Control"] = "public, max-age=600"  # 10 min
+        return resp
 
     # 1) Intentar BD primero
     try:
@@ -2400,14 +2419,10 @@ def api_catalogo():
         if rows:
             data = []
             for r in rows:
-                # RealDictCursor -> r es dict
                 item = r.get("data") if isinstance(r, dict) else r[0]
                 if isinstance(item, dict):
                     data.append(item)
-            resp = make_response(jsonify(data))
-            resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-            resp.headers["Pragma"] = "no-cache"
-            return resp
+            return _make_etag_response(data)
 
     except Exception as e:
         print("CATALOGO DB ERROR:", e)
@@ -2422,10 +2437,8 @@ def api_catalogo():
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    resp = make_response(jsonify(data))
-    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    resp.headers["Pragma"] = "no-cache"
-    return resp
+    return _make_etag_response(data)
+
 
 
 
