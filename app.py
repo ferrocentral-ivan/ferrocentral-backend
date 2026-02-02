@@ -3123,7 +3123,7 @@ def api_actualizar_precios():
     return jsonify(r), (200 if r.get("ok") else 400)
 
 
-@app.route("/api/admin/nuevos/truper-export.zip", methods=["GET"])
+@app.route("/api/admin/nuevos/truper-export", methods=["GET"])
 @require_role("SUPER_ADMIN")
 def api_descargar_zip_nuevos_truper():
     codigos = _get_nuevos_codigos_from_db()
