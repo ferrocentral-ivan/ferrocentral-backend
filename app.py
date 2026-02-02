@@ -25,7 +25,12 @@ from reportlab.pdfbase import pdfmetrics
 import smtplib
 import ssl
 from email.message import EmailMessage
-
+import io
+import zipfile
+import time
+from typing import Dict, Any, List, Optional, Tuple
+from bs4 import BeautifulSoup
+import requests
 
 
 
@@ -2532,6 +2537,134 @@ def api_catalogo():
 
     return _make_etag_response(data)
 
+TRUPER_FICHA_URL = "https://www.truper.com/ficha_tecnica/controllers/index.php?codigo="
+
+def _http_get(url: str, timeout: int = 12) -> requests.Response:
+    # Headers simples para que no te bloqueen fácil
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; FerroCentralBot/1.0)",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    return requests.get(url, timeout=timeout, headers=headers)
+
+def _parse_truper_ficha(html: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """
+    Devuelve: (titulo, descripcion_texto, banco_fotos_url)
+    - titulo: nombre principal del producto
+    - descripcion_texto: texto resumido (bullet points si existen)
+    - banco_fotos_url: link al ZIP o recurso de "Banco de Fotos" si existe
+    """
+    soup = BeautifulSoup(html, "html.parser")
+
+    # 1) Intentar tomar un título claro
+    title = None
+    og = soup.find("meta", attrs={"property": "og:title"})
+    if og and og.get("content"):
+        title = og["content"].strip()
+
+    if not title:
+        h1 = soup.find("h1")
+        if h1:
+            title = h1.get_text(" ", strip=True)
+
+    # 2) Descripción: tomar bullets si hay
+    bullets: List[str] = []
+    for li in soup.select("ul li"):
+        txt = li.get_text(" ", strip=True)
+        if txt and len(txt) >= 10:
+            bullets.append(txt)
+
+    # Limitar para no inflar
+    bullets = bullets[:12]
+    descripcion = "\n".join(f"- {b}" for b in bullets) if bullets else None
+
+    # 3) Link "Banco de Fotos"
+    banco_url = None
+    for a in soup.find_all("a"):
+        t = (a.get_text(" ", strip=True) or "").lower()
+        href = a.get("href") or ""
+        if "banco de fotos" in t or "banco_fotos" in href.lower() or "banco" in href.lower():
+            if href.startswith("http"):
+                banco_url = href
+            elif href.startswith("/"):
+                banco_url = "https://www.truper.com" + href
+            else:
+                # relativo raro
+                banco_url = "https://www.truper.com/" + href.lstrip("/")
+            break
+
+    return title, descripcion, banco_url
+
+def _download_truper_banco_fotos(banco_url: str, timeout: int = 20) -> List[Tuple[str, bytes]]:
+    """
+    Devuelve lista de (filename, bytes) de imágenes encontradas.
+    Si el banco de fotos es un ZIP, lo abre y extrae imágenes.
+    """
+    r = _http_get(banco_url, timeout=timeout)
+    if r.status_code != 200:
+        return []
+
+    content_type = (r.headers.get("Content-Type") or "").lower()
+
+    images: List[Tuple[str, bytes]] = []
+
+    # Caso 1: viene ZIP
+    if "zip" in content_type or banco_url.lower().endswith(".zip"):
+        zdata = io.BytesIO(r.content)
+        try:
+            with zipfile.ZipFile(zdata) as zf:
+                for name in zf.namelist():
+                    low = name.lower()
+                    if low.endswith((".jpg", ".jpeg", ".png", ".webp")):
+                        try:
+                            images.append((name.split("/")[-1], zf.read(name)))
+                        except Exception:
+                            pass
+        except Exception:
+            return []
+    else:
+        # Caso 2: viene una imagen directa (raro, pero soportamos)
+        if banco_url.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
+            images.append((banco_url.split("/")[-1], r.content))
+
+    return images
+
+def _get_nuevos_codigos_from_db() -> List[str]:
+    """
+    Devuelve códigos marcados como nuevos.
+    Compatible con 2 escenarios:
+    1) Columna es_nuevo (si existe)
+    2) Flag dentro del JSONB data -> 'es_nuevo' (recomendado)
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        # Intento 1: si existe columna es_nuevo
+        try:
+            cur.execute("SELECT code FROM productos_catalogo WHERE es_nuevo = TRUE ORDER BY code ASC")
+            rows = cur.fetchall()
+            return [str((r.get("code") if isinstance(r, dict) else r[0])).strip() for r in rows if r]
+        except Exception:
+            conn.rollback()
+
+        # Intento 2: flag dentro del JSONB data
+        # (data->>'es_nuevo') puede ser 'true'/'false'
+        cur.execute("""
+            SELECT code
+            FROM productos_catalogo
+            WHERE COALESCE((data->>'es_nuevo')::boolean, false) = true
+            ORDER BY code ASC
+        """)
+        rows = cur.fetchall()
+        return [str((r.get("code") if isinstance(r, dict) else r[0])).strip() for r in rows if r]
+
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        conn.close()
+
 
 
 
@@ -2990,6 +3123,86 @@ def api_actualizar_precios():
     return jsonify(r), (200 if r.get("ok") else 400)
 
 
+@app.route("/api/admin/nuevos/truper-export.zip", methods=["GET"])
+@require_role("SUPER_ADMIN")
+def api_descargar_zip_nuevos_truper():
+    codigos = _get_nuevos_codigos_from_db()
+    if not codigos:
+        return jsonify({"ok": False, "error": "No hay productos nuevos (es_nuevo=true)"}), 404
+
+    # Armamos zip en memoria
+    zip_buffer = io.BytesIO()
+    reporte = []
+    mapping: Dict[str, Any] = {}
+
+    # Limitar para no matar Render si un día salen 500 nuevos.
+    # Si quieres, subimos luego.
+    MAX_NUEVOS = 80
+    codigos = codigos[:MAX_NUEVOS]
+
+    with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for i, code in enumerate(codigos, start=1):
+            code = str(code).strip()
+            if not code:
+                continue
+
+            # Pequeña pausa para no spamear Truper
+            time.sleep(0.25)
+
+            ficha_url = TRUPER_FICHA_URL + code
+            try:
+                r = _http_get(ficha_url, timeout=12)
+                if r.status_code != 200:
+                    reporte.append(f"{code}: ficha no disponible (HTTP {r.status_code})")
+                    continue
+
+                title, descripcion, banco_url = _parse_truper_ficha(r.text)
+                mapping[code] = {
+                    "titulo": title,
+                    "descripcion": descripcion,
+                    "ficha_url": ficha_url,
+                    "banco_fotos_url": banco_url
+                }
+
+                # Guardar info.json por producto
+                info_path = f"truper_export/{code}/info.json"
+                zf.writestr(info_path, json.dumps(mapping[code], ensure_ascii=False, indent=2))
+
+                # Descargar banco de fotos si existe
+                if banco_url:
+                    imgs = _download_truper_banco_fotos(banco_url, timeout=20)
+                    if imgs:
+                        # Tomar máximo 5 imágenes y renombrarlas
+                        count = 0
+                        for name, data in imgs:
+                            if count >= 5:
+                                break
+                            count += 1
+                            img_path = f"truper_export/{code}/images/{code}-{count}.jpg"
+                            zf.writestr(img_path, data)
+                        reporte.append(f"{code}: OK ({count} imágenes)")
+                    else:
+                        reporte.append(f"{code}: sin imágenes en banco_fotos")
+                else:
+                    reporte.append(f"{code}: no se encontró link Banco de Fotos")
+
+            except Exception as e:
+                reporte.append(f"{code}: ERROR {type(e).__name__}")
+
+        # Archivo general con descripciones
+        zf.writestr("nuevos_descripciones.json", json.dumps(mapping, ensure_ascii=False, indent=2))
+        zf.writestr("reporte.txt", "\n".join(reporte))
+
+    zip_buffer.seek(0)
+
+    # Nombre amigable
+    filename = "truper_export_nuevos.zip"
+    return send_file(
+        zip_buffer,
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name=filename
+    )
 
 
 
