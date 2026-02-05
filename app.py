@@ -2924,8 +2924,9 @@ def api_upload_excel_precios():
     except Exception as e:
         return jsonify({"ok": False, "error": f"No se pudo guardar Excel: {e}"}), 500
 
-    # Forzar que el script siempre use este Excel
-    os.environ["EXCEL_FILE"] = "proveedor.xlsm"
+    # Forzar que el script siempre use este Excel (RUTA ABSOLUTA)
+    os.environ["EXCEL_FILE"] = final_path
+ 
 
 
     audit("EXCEL_SUBIDO", "sistema", None, {"filename": os.path.basename(final_path)})
@@ -2970,24 +2971,34 @@ def api_actualizar_precios():
             "error": "Módulo actualizar_precios no disponible en el servidor"
         }), 500
 
-    r = actualizar_precios()
+    import traceback
 
-    # Compatibilidad con el panel (evita "undefined")
-    if isinstance(r, dict):
-        # Nombres nuevos (del script)
-        # actualizados, creados_nuevos, filas_excel_validas, descuento_proveedor, en_json_no_en_excel
-        r.setdefault("updated", r.get("actualizados"))
-        r.setdefault("missing", r.get("en_json_no_en_excel"))
-        r.setdefault("rows", r.get("filas_excel_validas"))
-        r.setdefault("discount", r.get("descuento_proveedor"))
+    base_dir = os.path.dirname(os.path.abspath(__file__))
 
-        # Si el admin.html use estos nombres en español, también los dejamos
-        r.setdefault("filas_excel", r.get("filas_excel_validas"))
-        r.setdefault("descuento", r.get("descuento_proveedor"))
-        r.setdefault("nuevos", r.get("nuevos") if r.get("nuevos") is not None else len(r.get("nuevos_codigos") or []))
-        r.setdefault("nuevos_codigos", r.get("nuevos_codigos") or [x.get("code") for x in (r.get("nuevos_detectados") or []) if isinstance(x, dict)])
+    # Resolver EXCEL_FILE a ruta absoluta (evita “no encuentra proveedor.xlsm”)
+    excel_path = os.environ.get("EXCEL_FILE") or "proveedor.xlsm"
+    if not os.path.isabs(excel_path):
+        excel_path = os.path.join(base_dir, excel_path)
 
-    return jsonify(r), (200 if r.get("ok") else 400)
+    if not os.path.exists(excel_path):
+        return jsonify({
+            "ok": False,
+            "error": f"No se encontró el Excel en servidor: {excel_path}. Primero sube el Excel."
+        }), 400
+
+    # Asegurar que el script lea exactamente este archivo
+    os.environ["EXCEL_FILE"] = excel_path
+
+    try:
+        r = actualizar_precios()
+    except Exception as e:
+        print("ERROR en actualizar_precios():", str(e))
+        print(traceback.format_exc())
+        return jsonify({
+            "ok": False,
+            "error": f"Fallo al actualizar precios: {e}"
+        }), 500
+
 
 
 
