@@ -338,18 +338,29 @@ def require_login(fn):
         return fn(*args, **kwargs)
     return wrapper
 
+from functools import wraps
+from flask import request, jsonify, session
+
 def require_role(*roles):
     def deco(fn):
         @wraps(fn)
         def wrapper(*args, **kwargs):
-            r = session.get("role")
+            # ✅ Permitir preflight CORS sin sesión
+            if request.method == "OPTIONS":
+                return ("", 200)
+
+            r = (session.get("role") or "").upper()
+            allowed = {str(x).upper() for x in roles}
+
             if not r:
                 return jsonify({"ok": False, "error": "No autenticado"}), 401
-            if r not in roles:
+            if r not in allowed:
                 return jsonify({"ok": False, "error": "No autorizado"}), 403
+
             return fn(*args, **kwargs)
         return wrapper
     return deco
+
 
 #  Verifica que un ADMIN solo acceda a pedidos propios
 def forbid_if_not_owner(cur, pedido_id: int):
@@ -3026,33 +3037,43 @@ def api_product_overrides_all():
     conn.close()
     return jsonify({"ok": True, "overrides": rows})
 
-@app.route("/api/admin/actualizar-precios", methods=["POST"])
+@app.route("/api/admin/actualizar-precios", methods=["POST", "OPTIONS"])
 @require_role("SUPER_ADMIN")
 def api_actualizar_precios():
+    if request.method == "OPTIONS":
+        return ("", 200)
+
     if actualizar_precios is None:
         return jsonify({
             "ok": False,
             "error": "Módulo actualizar_precios no disponible en el servidor"
         }), 500
 
-    r = actualizar_precios()
+    try:
+        r = actualizar_precios()
 
-    # Compatibilidad con el panel (evita "undefined")
-    if isinstance(r, dict):
-        # Nombres nuevos (del script)
-        # actualizados, creados_nuevos, filas_excel_validas, descuento_proveedor, en_json_no_en_excel
-        r.setdefault("updated", r.get("actualizados"))
-        r.setdefault("missing", r.get("en_json_no_en_excel"))
-        r.setdefault("rows", r.get("filas_excel_validas"))
-        r.setdefault("discount", r.get("descuento_proveedor"))
+        # Compatibilidad con el panel (evita "undefined")
+        if isinstance(r, dict):
+            r.setdefault("updated", r.get("actualizados"))
+            r.setdefault("missing", r.get("en_json_no_en_excel"))
+            r.setdefault("rows", r.get("filas_excel_validas"))
+            r.setdefault("discount", r.get("descuento_proveedor"))
 
-        # Si el admin.html use estos nombres en español, también los dejamos
-        r.setdefault("filas_excel", r.get("filas_excel_validas"))
-        r.setdefault("descuento", r.get("descuento_proveedor"))
-        r.setdefault("nuevos", r.get("nuevos") if r.get("nuevos") is not None else len(r.get("nuevos_codigos") or []))
-        r.setdefault("nuevos_codigos", r.get("nuevos_codigos") or [x.get("code") for x in (r.get("nuevos_detectados") or []) if isinstance(x, dict)])
+            r.setdefault("filas_excel", r.get("filas_excel_validas"))
+            r.setdefault("descuento", r.get("descuento_proveedor"))
+            r.setdefault("nuevos", r.get("nuevos") if r.get("nuevos") is not None else len(r.get("nuevos_codigos") or []))
+            r.setdefault("nuevos_codigos", r.get("nuevos_codigos") or [x.get("code") for x in (r.get("nuevos_detectados") or []) if isinstance(x, dict)])
 
-    return jsonify(r), (200 if r.get("ok") else 400)
+        return jsonify(r), (200 if r.get("ok") else 400)
+
+    except Exception as e:
+        import traceback
+        return jsonify({
+            "ok": False,
+            "error": f"Fallo en actualizar_precios(): {str(e)}",
+            "trace": traceback.format_exc()
+        }), 500
+
 
 
 
