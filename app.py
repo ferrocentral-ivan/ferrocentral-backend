@@ -833,16 +833,24 @@ def api_public_qr_banco():
     row = cur.fetchone()
     conn.close()
 
-    if not row or not row[1]:
+    # Soportar row como dict (RealDictCursor) o tuple/list
+    if not row:
         return ("QR no configurado", 404)
 
-    mime, data = row[0] or "image/png", row[1]
+    if isinstance(row, dict):
+        mime = row.get("mime") or "image/png"
+        data = row.get("data")
+    else:
+        mime = (row[0] or "image/png")
+        data = row[1] if len(row) > 1 else None
 
-    # Nombre coherente con el tipo real (evita que el navegador “crea” que es PNG si es WEBP)
+    if not data:
+        return ("QR no configurado", 404)
+
+    # Nombre coherente con el tipo real
     filename = "qr-banco.webp" if (mime or "").lower() == "image/webp" else "qr-banco.png"
 
     resp = send_file(BytesIO(data), mimetype=mime, download_name=filename, conditional=False)
-    # Evitar cache para que cuando cambies el QR se vea al instante
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
     return resp
