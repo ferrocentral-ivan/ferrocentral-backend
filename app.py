@@ -948,6 +948,242 @@ def api_admin_qr_banco_upload():
 
     return jsonify({"ok": True, "sha256": sha, "updated_at": now.isoformat(), "mime": mime, "bytes": len(data)})
 
+# =========================
+#  ENRIQUECER PRODUCTOS NUEVOS DESDE TRUPER (URLS EXTERNAS)
+# =========================
+
+def _strip_html(s: str) -> str:
+    s = re.sub(r"<[^>]+>", " ", s or "")
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+def _extract_ficha_url_from_buscador(html: str, code: str) -> str | None:
+    """
+    Busca el link a ficha_tecnica dentro del buscador del catálogo.
+    """
+    # Ejemplo: /ficha_tecnica/....html?code=26029
+    m = re.search(r'href="([^"]*?/ficha_tecnica/[^"]+?code=' + re.escape(code) + r'[^"]*)"', html, re.IGNORECASE)
+    if m:
+        href = m.group(1)
+        if href.startswith("http"):
+            return href
+        return "https://www.truper.com" + href
+    return None
+
+def _extract_images_from_ficha(html: str) -> list[str]:
+    """
+    Extrae imágenes "buenas" desde la ficha (sin garantizar 100% todas, pero suficiente para mostrar).
+    """
+    imgs = []
+    # imágenes típicas de truper: /media/import/imagenes/XXX.jpg
+    for m in re.finditer(r'src="(https?://www\.truper\.com/[^"]+?\.(?:jpg|jpeg|png|webp))"', html, re.IGNORECASE):
+        url = m.group(1)
+        if url not in imgs:
+            imgs.append(url)
+    return imgs[:12]
+
+def _extract_bullets_specs_from_ficha(html: str) -> tuple[list[str], dict]:
+    """
+    Intento razonable:
+    - bullets: toma <li> visibles
+    - specs: intenta tomar pares tipo <td> / <th> en tablas
+    Si Truper cambia HTML, esto puede devolver vacío, pero NO rompe nada.
+    """
+    bullets = []
+    for m in re.finditer(r"<li[^>]*>(.*?)</li>", html, re.IGNORECASE | re.DOTALL):
+        t = _strip_html(m.group(1))
+        if t and len(t) <= 200 and t not in bullets:
+            bullets.append(t)
+    bullets = bullets[:20]
+
+    specs = {}
+    # tabla simple: <tr><td>k</td><td>v</td></tr>
+    for m in re.finditer(r"<tr[^>]*>\s*<t[hd][^>]*>(.*?)</t[hd]>\s*<t[hd][^>]*>(.*?)</t[hd]>\s*</tr>",
+                         html, re.IGNORECASE | re.DOTALL):
+        k = _strip_html(m.group(1))
+        v = _strip_html(m.group(2))
+        if k and v and len(k) <= 80 and len(v) <= 120:
+            # evita basura tipo "Código: 26029" duplicado
+            if k.lower() not in ("código", "codigo", "clave"):
+                specs.setdefault(k, v)
+
+    # si hay demasiadas, recorta
+    if len(specs) > 30:
+        specs = dict(list(specs.items())[:30])
+
+    return bullets, specs
+
+def fetch_truper_enrichment(code: str) -> dict:
+    """
+    Devuelve un dict con data para mergear en productos_catalogo.data:
+    - title / brand / images / long_desc / specs / truper{...}
+    """
+    code = str(code).strip()
+    if not code:
+        raise ValueError("Código vacío")
+
+    # 1) Intento rápido: getjson (sirve para nombre/brand/imagen principal)
+    base = {}
+    try:
+        url = "https://www.truper.com/manuales/consulta/getjson"
+        r = requests.get(url, params={"palabra": code}, timeout=10, headers={"User-Agent": "FerroCentralBot/1.0"})
+        if r.ok:
+            # A veces viene como JSON array
+            j = r.json()
+            if isinstance(j, list):
+                hit = None
+                for it in j:
+                    if str(it.get("code") or "").strip() == code:
+                        hit = it
+                        break
+                if hit:
+                    base["title"] = (hit.get("name") or "").strip() or None
+                    base["brand"] = (hit.get("brand") or "").strip() or None
+                    img = (hit.get("image") or "").strip()
+                    if img:
+                        base["images"] = [img]
+    except Exception:
+        pass  # no romper
+
+    # 2) Buscador catálogo → link a ficha técnica
+    busc_url = f"https://www.truper.com/CatVigente/buscador?palabra={code}"
+    br = requests.get(busc_url, timeout=12, headers={"User-Agent": "FerroCentralBot/1.0"})
+    if not br.ok:
+        raise RuntimeError(f"No pude abrir buscador Truper ({br.status_code})")
+
+    ficha_url = _extract_ficha_url_from_buscador(br.text, code)
+    if not ficha_url:
+        # Si no hay ficha, devolvemos lo mínimo (si base trajo algo)
+        out = {
+            "images": base.get("images", []),
+            "title": base.get("title"),
+            "brand": base.get("brand"),
+            "truper": {
+                "buscador_url": busc_url,
+                "ficha_url": None,
+                "pdf_url": f"https://www.truper.com/ficha_merca/ficha-print.php?code={code}",
+                "updated_at": datetime.utcnow().isoformat()
+            }
+        }
+        return out
+
+    fr = requests.get(ficha_url, timeout=12, headers={"User-Agent": "FerroCentralBot/1.0"})
+    if not fr.ok:
+        raise RuntimeError(f"No pude abrir ficha Truper ({fr.status_code})")
+
+    html = fr.text
+    bullets, specs = _extract_bullets_specs_from_ficha(html)
+    imgs = _extract_images_from_ficha(html)
+
+    # mezcla: si base tenía imagen y no encontramos otras, úsala
+    if not imgs and base.get("images"):
+        imgs = base["images"]
+
+    out = {
+        "title": base.get("title"),
+        "brand": base.get("brand"),
+        "images": imgs,
+        "bullets": bullets,
+        "specs": specs,
+        "long_desc": "\n".join(bullets) if bullets else None,
+        "truper": {
+            "buscador_url": busc_url,
+            "ficha_url": ficha_url,
+            "pdf_url": f"https://www.truper.com/ficha_merca/ficha-print.php?code={code}",
+            "updated_at": datetime.utcnow().isoformat()
+        }
+    }
+    # limpia None
+    return {k: v for k, v in out.items() if v not in (None, "", [], {})}
+
+
+@app.route("/api/admin/enriquecer-nuevos", methods=["POST"])
+@require_role("SUPER_ADMIN", "ADMIN")
+def api_admin_enriquecer_nuevos():
+    """
+    Enriquecer productos por lista de códigos:
+    - No toca precios
+    - No toca overrides (imagen/promo_label) si ya existen
+    - Guarda en productos_catalogo.data (JSONB) para persistencia
+    """
+    payload = request.get_json(silent=True) or {}
+    codes = payload.get("codes") or []
+    limit = int(payload.get("limit") or 10)
+
+    if not isinstance(codes, list) or not codes:
+        return jsonify({"ok": False, "error": "Debes enviar {codes:[...]}."}), 400
+
+    codes = [str(c).strip() for c in codes if str(c).strip()]
+    codes = codes[:max(1, min(limit, 25))]  # seguridad
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    ok_list = []
+    err_list = []
+
+    for code in codes:
+        try:
+            enrich = fetch_truper_enrichment(code)
+
+            # Traer actual para NO pisar campos críticos si ya existen
+            cur.execute("SELECT data FROM productos_catalogo WHERE code=%s LIMIT 1", (code,))
+            row = cur.fetchone()
+            data_now = None
+            if isinstance(row, dict):
+                data_now = row.get("data")
+            elif row and len(row) > 0:
+                data_now = row[0]
+
+            # Si no existe en BD todavía, no lo creamos aquí (evitar sorpresas)
+            if not data_now:
+                err_list.append({"code": code, "error": "No existe en BD (aún no insertado por Excel)."})
+                continue
+
+            # No pisar imagen/promo_label/flags si ya están (tu control visual de NUEVO)
+            # Solo añadimos fields nuevos: images/bullets/specs/long_desc/truper/title/brand si faltan
+            safe_merge = {}
+            for k in ("images", "bullets", "specs", "long_desc", "truper"):
+                if enrich.get(k):
+                    safe_merge[k] = enrich[k]
+            # title/brand solo si están vacíos en DB
+            if enrich.get("title") and not (data_now or {}).get("title"):
+                safe_merge["title"] = enrich["title"]
+            if enrich.get("brand") and not (data_now or {}).get("brand"):
+                safe_merge["brand"] = enrich["brand"]
+
+            if not safe_merge:
+                ok_list.append({"code": code, "status": "sin_cambios"})
+                continue
+
+            cur.execute(
+                """
+                UPDATE productos_catalogo
+                SET data = COALESCE(data, '{}'::jsonb) || %s::jsonb,
+                    updated_at = %s
+                WHERE code = %s
+                """,
+                (json.dumps(safe_merge, ensure_ascii=False), datetime.utcnow().isoformat(), code)
+            )
+
+            ok_list.append({"code": code, "status": "ok", "images": len(safe_merge.get("images") or [])})
+
+        except Exception as e:
+            err_list.append({"code": code, "error": str(e)})
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "ok": True,
+        "processed": len(codes),
+        "ok_count": len(ok_list),
+        "err_count": len(err_list),
+        "ok_list": ok_list,
+        "err_list": err_list
+    })
+
+
 
 
 # =========================================================
