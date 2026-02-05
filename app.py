@@ -832,15 +832,22 @@ def api_public_qr_banco():
     row = cur.fetchone()
     conn.close()
 
-    if not row or not row[1]:
+    if not row:
         return ("QR no configurado", 404)
 
-    mime, data = row[0] or "image/png", row[1]
-    resp = send_file(BytesIO(data), mimetype=mime, download_name="qr-banco.png", conditional=False)
-    # Evitar cache para que cuando cambies el QR se vea al instante
-    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    resp.headers["Pragma"] = "no-cache"
-    return resp
+    # Soportar RealDictCursor (dict) o cursor normal (tuple/list)
+    if isinstance(row, dict):
+        mime = row.get("mime") or "image/png"
+        data = row.get("data")
+    else:
+        mime = (row[0] or "image/png")
+        data = row[1] if len(row) > 1 else None
+
+    if not data:
+        return ("QR no configurado", 404)
+
+    return (data, 200, {"Content-Type": mime, "Cache-Control": "no-store"})
+
 
 
 @app.route('/api/admin/qr-banco', methods=['POST'])
@@ -2971,33 +2978,32 @@ def api_actualizar_precios():
             "error": "Módulo actualizar_precios no disponible en el servidor"
         }), 500
 
-    import traceback
-
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-
-    # Resolver EXCEL_FILE a ruta absoluta (evita “no encuentra proveedor.xlsm”)
-    excel_path = os.environ.get("EXCEL_FILE") or "proveedor.xlsm"
-    if not os.path.isabs(excel_path):
-        excel_path = os.path.join(base_dir, excel_path)
-
-    if not os.path.exists(excel_path):
-        return jsonify({
-            "ok": False,
-            "error": f"No se encontró el Excel en servidor: {excel_path}. Primero sube el Excel."
-        }), 400
-
-    # Asegurar que el script lea exactamente este archivo
-    os.environ["EXCEL_FILE"] = excel_path
-
     try:
         r = actualizar_precios()
     except Exception as e:
-        print("ERROR en actualizar_precios():", str(e))
-        print(traceback.format_exc())
+        import traceback
+        tb = traceback.format_exc()
+        print("ERROR en actualizar_precios():\n", tb)
         return jsonify({
             "ok": False,
-            "error": f"Fallo al actualizar precios: {e}"
+            "error": str(e),
+            "trace": tb
         }), 500
+
+    # Compatibilidad con el panel (evita "undefined")
+    if isinstance(r, dict):
+        r.setdefault("updated", r.get("actualizados"))
+        r.setdefault("missing", r.get("en_json_no_en_excel"))
+        r.setdefault("rows", r.get("filas_excel_validas"))
+        r.setdefault("discount", r.get("descuento_proveedor"))
+
+        r.setdefault("filas_excel", r.get("filas_excel_validas"))
+        r.setdefault("descuento", r.get("descuento_proveedor"))
+        r.setdefault("nuevos", r.get("nuevos") if r.get("nuevos") is not None else len(r.get("nuevos_codigos") or []))
+        r.setdefault("nuevos_codigos", r.get("nuevos_codigos") or [x.get("code") for x in (r.get("nuevos_detectados") or []) if isinstance(x, dict)])
+
+    return jsonify(r), (200 if r.get("ok") else 500)
+
 
 
 
