@@ -25,6 +25,9 @@ from reportlab.pdfbase import pdfmetrics
 import smtplib
 import ssl
 from email.message import EmailMessage
+from urllib.request import Request
+from urllib.parse import quote
+import re
 
 
 
@@ -3007,6 +3010,169 @@ def _truper_find_image_by_code(code: str):
 
     return img
 
+def _truper_find_image_by_code(code: str):
+    """
+    Busca una imagen en Truper por código.
+    Devuelve una URL de imagen o None.
+    No revienta el proceso si Truper está lento o cambia algo.
+    """
+    code = str(code).strip()
+    if not code:
+        return None
+
+    # Buscar por código (Truper)
+    search_url = f"https://www.truper.com/catalogsearch/result/?q={quote(code)}"
+    req = Request(
+        search_url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (compatible; FerroCentralBot/1.0)",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+    )
+
+    try:
+        with urlopen(req, timeout=12) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+
+    # Intento 1: imágenes de catálogo (Magento suele usar media/catalog/product)
+    m = re.search(r'(https?://[^"\']+/media/catalog/product/[^"\']+)', html, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+
+    # Intento 2: cualquier <img src="...">
+    m2 = re.search(r'<img[^>]+src="([^"]+)"', html, re.IGNORECASE)
+    if not m2:
+        return None
+
+    img = (m2.group(1) or "").strip()
+    if not img:
+        return None
+    if img.startswith("//"):
+        img = "https:" + img
+
+    return img
+
+
+@app.route("/api/admin/nuevos/autofill", methods=["POST"])
+@require_role("SUPER_ADMIN")
+def api_admin_nuevos_autofill():
+    """
+    Completa fotos (y deja promo_label='NUEVO') para códigos nuevos.
+
+    - Si el request manda {codes:[...]} usa esos.
+    - Si NO manda codes, busca en DB overrides con promo_label='NUEVO'
+      y sin imagen o con placeholder.
+    """
+    payload = request.get_json(silent=True) or {}
+    codes = payload.get("codes")
+    limit = int(payload.get("limit") or 10)
+
+    # límites sanos para Render $5/mes
+    if limit < 1:
+        limit = 1
+    if limit > 20:
+        limit = 20
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    # Asegurar columna promo_label (por si tu tabla es vieja)
+    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS promo_label TEXT")
+    conn.commit()
+
+    # Si no vienen codes, buscamos los "NUEVO" sin imagen (o con placeholder)
+    if not codes:
+        cur.execute(
+            """
+            SELECT code
+            FROM producto_overrides
+            WHERE
+              COALESCE(promo_label,'') ILIKE 'NUEVO%'
+              AND (
+                imagen IS NULL OR imagen='' OR imagen='img/nuevo.jpg' OR imagen ILIKE '%nuevo%'
+              )
+            ORDER BY code
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        rows = cur.fetchall()
+        codes = [r[0] for r in rows] if rows else []
+
+    # Normalizar lista
+    if not isinstance(codes, list):
+        conn.close()
+        return jsonify({"ok": False, "error": "codes debe ser lista o vacío"}), 400
+
+    codes = [str(c).strip() for c in codes if str(c).strip()]
+    codes = codes[:limit]
+
+    results = []
+    updated = 0
+    with_image = 0
+
+    for code in codes:
+        img = None
+        try:
+            img = _truper_find_image_by_code(code)
+
+            # Upsert en overrides:
+            # - si ya tiene imagen, NO la pisa (solo si está vacía/placeholder)
+            if img:
+                cur.execute(
+                    """
+                    INSERT INTO producto_overrides (code, oculto, imagen, destacado, orden, promo_label)
+                    VALUES (%s, FALSE, %s, FALSE, 0, 'NUEVO')
+                    ON CONFLICT (code) DO UPDATE SET
+                      imagen = CASE
+                        WHEN producto_overrides.imagen IS NULL OR producto_overrides.imagen='' OR producto_overrides.imagen='img/nuevo.jpg' OR producto_overrides.imagen ILIKE '%nuevo%'
+                        THEN EXCLUDED.imagen
+                        ELSE producto_overrides.imagen
+                      END,
+                      promo_label = CASE
+                        WHEN COALESCE(producto_overrides.promo_label,'') = '' THEN 'NUEVO'
+                        ELSE producto_overrides.promo_label
+                      END
+                    """,
+                    (code, img),
+                )
+                with_image += 1
+            else:
+                # Si no encontró imagen, igual aseguramos promo_label="NUEVO"
+                cur.execute(
+                    """
+                    INSERT INTO producto_overrides (code, oculto, imagen, destacado, orden, promo_label)
+                    VALUES (%s, FALSE, NULL, FALSE, 0, 'NUEVO')
+                    ON CONFLICT (code) DO UPDATE SET
+                      promo_label = CASE
+                        WHEN COALESCE(producto_overrides.promo_label,'') = '' THEN 'NUEVO'
+                        ELSE producto_overrides.promo_label
+                      END
+                    """,
+                    (code,),
+                )
+
+            conn.commit()
+            updated += 1
+            results.append({"code": code, "ok": True, "imagen": img})
+        except Exception as e:
+            conn.rollback()
+            results.append({"code": code, "ok": False, "error": str(e)})
+
+    conn.close()
+    return jsonify(
+        {
+            "ok": True,
+            "processed": len(results),
+            "updated": updated,
+            "with_image": with_image,
+            "results": results,
+        }
+    )
+
+
 
 @app.route("/api/admin/autofill-nuevos", methods=["POST"])
 @require_role("SUPER_ADMIN")
@@ -3024,7 +3190,7 @@ def api_autofill_nuevos():
 
     # Limitar para que Render no muera (muy importante en $5/free)
     codes = [str(c).strip() for c in codes if str(c).strip().isdigit()]
-    codes = codes[:20]
+    codes = codes[:10]
 
     conn = get_connection()
     cur = conn.cursor()
