@@ -2969,6 +2969,109 @@ def api_product_overrides_all():
     conn.close()
     return jsonify({"ok": True, "overrides": rows})
 
+import re
+import requests
+from urllib.parse import quote
+
+def _truper_find_image_by_code(code: str):
+    """
+    Busca en Truper por código y devuelve una URL de imagen (si encuentra).
+    En modo 'barato' (sin dependencias extra).
+    """
+    code = str(code).strip()
+    if not code:
+        return None
+
+    # 1) Buscar resultados
+    q = quote(code)
+    search_url = f"https://www.truper.com/catalogsearch/result/?q={q}"
+    r = requests.get(search_url, timeout=12)
+    if r.status_code != 200:
+        return None
+
+    html = r.text
+
+    # 2) Intentar sacar primera imagen del listado (varía, pero suele haber <img ... src="...">
+    # Buscamos una imagen que parezca de catálogo
+    m = re.search(r'<img[^>]+src="([^"]+)"', html, re.IGNORECASE)
+    if not m:
+        return None
+
+    img = m.group(1).strip()
+    if not img:
+        return None
+
+    # Normalizar //...
+    if img.startswith("//"):
+        img = "https:" + img
+
+    return img
+
+
+@app.route("/api/admin/autofill-nuevos", methods=["POST"])
+@require_role("SUPER_ADMIN")
+def api_autofill_nuevos():
+    """
+    Recibe { codes: ["12345","99999", ...] }
+    y guarda en producto_overrides:
+      - imagen = URL encontrada (si existe)
+      - promo_label = "NUEVO" (si no estaba)
+    """
+    data = request.get_json() or {}
+    codes = data.get("codes") or []
+    if not isinstance(codes, list):
+        return jsonify({"ok": False, "error": "codes debe ser una lista"}), 400
+
+    # Limitar para que Render no muera (muy importante en $5/free)
+    codes = [str(c).strip() for c in codes if str(c).strip().isdigit()]
+    codes = codes[:20]
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    # Asegurar columna promo_label
+    cur.execute("ALTER TABLE producto_overrides ADD COLUMN IF NOT EXISTS promo_label TEXT")
+    conn.commit()
+
+    results = []
+    for code in codes:
+        try:
+            img = _truper_find_image_by_code(code)
+
+            # Si no encontró imagen, no lo pisa
+            if img:
+                cur.execute("""
+                    INSERT INTO producto_overrides (code, oculto, imagen, destacado, orden, promo_label)
+                    VALUES (%s, FALSE, %s, FALSE, 0, 'NUEVO')
+                    ON CONFLICT (code) DO UPDATE SET
+                        imagen = COALESCE(producto_overrides.imagen, EXCLUDED.imagen),
+                        promo_label = CASE
+                            WHEN COALESCE(producto_overrides.promo_label,'') = '' THEN EXCLUDED.promo_label
+                            ELSE producto_overrides.promo_label
+                        END
+                """, (code, img))
+            else:
+                # Si no hay imagen, igual marca "NUEVO" (solo si estaba vacío)
+                cur.execute("""
+                    INSERT INTO producto_overrides (code, oculto, imagen, destacado, orden, promo_label)
+                    VALUES (%s, FALSE, NULL, FALSE, 0, 'NUEVO')
+                    ON CONFLICT (code) DO UPDATE SET
+                        promo_label = CASE
+                            WHEN COALESCE(producto_overrides.promo_label,'') = '' THEN 'NUEVO'
+                            ELSE producto_overrides.promo_label
+                        END
+                """, (code,))
+
+            results.append({"code": code, "ok": True, "imagen": img})
+        except Exception as e:
+            results.append({"code": code, "ok": False, "error": str(e)})
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({"ok": True, "processed": len(results), "results": results})
+
+
 @app.route("/api/admin/actualizar-precios", methods=["POST"])
 @require_role("SUPER_ADMIN")
 def api_actualizar_precios():
