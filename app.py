@@ -3,6 +3,7 @@ from flask_cors import CORS
 import os, json, hashlib, secrets
 from datetime import datetime, timedelta
 from io import BytesIO
+from PIL import Image, ImageOps
 from backend.database import get_connection, create_tables
 from werkzeug.security import generate_password_hash, check_password_hash
 try:
@@ -846,23 +847,74 @@ def api_public_qr_banco():
 @app.route('/api/admin/qr-banco', methods=['POST'])
 @require_role("SUPER_ADMIN", "ADMIN")
 def api_admin_qr_banco_upload():
-    """Sube/actualiza el QR bancario (solo ADMIN/SUPER_ADMIN)."""
+    """Sube/actualiza el QR bancario (solo ADMIN/SUPER_ADMIN).
+    Acepta captura/foto grande del celular, la recorta al centro y la comprime a WEBP.
+    """
     f = request.files.get("file") or request.files.get("qr")
     if not f:
         return jsonify({"ok": False, "error": "Falta archivo (field 'file' o 'qr')."}), 400
 
-    # Validar tipo (aceptamos fotos del celular también)
-    mime = (f.mimetype or "").lower()
-    if mime not in ("image/png", "image/jpeg", "image/jpg", "image/webp"):
+    # Aceptamos formatos comunes del celular
+    mime_in = (f.mimetype or "").lower()
+    if mime_in not in ("image/png", "image/jpeg", "image/jpg", "image/webp"):
         return jsonify({"ok": False, "error": "Formato no válido. Usa PNG/JPG/WEBP."}), 400
 
-    data = f.read()
-    if not data or len(data) < 200:
+    raw = f.read()
+    if not raw or len(raw) < 200:
         return jsonify({"ok": False, "error": "Imagen vacía o inválida."}), 400
 
-    # límite de tamaño (2MB)
-    if len(data) > 2_000_000:
-        return jsonify({"ok": False, "error": "Imagen muy grande (máx 2MB)."}), 400
+    # Límite de entrada (para no reventar memoria). Capturas del cel suelen estar < 10MB.
+    if len(raw) > 12_000_000:
+        return jsonify({"ok": False, "error": "Imagen muy grande (máx 12MB)."}), 400
+
+    # --- Procesar: recorte centrado + resize + compresión WEBP ---
+    try:
+        im = Image.open(BytesIO(raw))
+        im = ImageOps.exif_transpose(im)  # respeta rotación de fotos del celular
+        im.load()
+
+        w, h = im.size
+
+        # Si es captura vertical/horizontal grande, recortamos al cuadrado del centro (donde suele estar el QR)
+        if w == 0 or h == 0:
+            raise ValueError("Imagen inválida (0x0).")
+
+        side = min(w, h)
+        left = (w - side) // 2
+        top = (h - side) // 2
+        im = im.crop((left, top, left + side, top + side))
+
+        # Reducir tamaño final: suficiente para escaneo, rápido de cargar
+        MAX_SIDE = 1024
+        w2, h2 = im.size
+        if max(w2, h2) > MAX_SIDE:
+            scale = MAX_SIDE / float(max(w2, h2))
+            im = im.resize((int(w2 * scale), int(h2 * scale)), Image.LANCZOS)
+
+        # Convertir modo
+        if im.mode not in ("RGB", "RGBA"):
+            im = im.convert("RGB")
+
+        # Guardar a WEBP con calidad adaptativa (buscamos <= ~900KB)
+        out = BytesIO()
+        q = 85
+        while True:
+            out.seek(0)
+            out.truncate(0)
+            im.save(out, format="WEBP", quality=q, method=6)
+            data = out.getvalue()
+            if len(data) <= 900_000 or q <= 60:
+                break
+            q -= 5
+
+        mime = "image/webp"
+
+    except Exception:
+        # Si por alguna razón Pillow falla, guardamos el original (pero controlamos tamaño)
+        if len(raw) > 2_000_000:
+            return jsonify({"ok": False, "error": "No se pudo procesar la imagen. Intenta exportar a WEBP 80% (Photopea) y vuelve a subir."}), 400
+        data = raw
+        mime = mime_in or "image/png"
 
     sha = hashlib.sha256(data).hexdigest()
     now = datetime.utcnow()
@@ -882,7 +934,8 @@ def api_admin_qr_banco_upload():
     conn.commit()
     conn.close()
 
-    return jsonify({"ok": True, "sha256": sha, "updated_at": now.isoformat()})
+    return jsonify({"ok": True, "sha256": sha, "updated_at": now.isoformat(), "mime": mime, "bytes": len(data)})
+
 
 
 # =========================================================
