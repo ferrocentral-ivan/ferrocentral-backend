@@ -3,7 +3,6 @@ from flask_cors import CORS
 import os, json, hashlib, secrets
 from datetime import datetime, timedelta
 from io import BytesIO
-from PIL import Image, ImageOps
 from backend.database import get_connection, create_tables
 from werkzeug.security import generate_password_hash, check_password_hash
 try:
@@ -338,29 +337,18 @@ def require_login(fn):
         return fn(*args, **kwargs)
     return wrapper
 
-from functools import wraps
-from flask import request, jsonify, session
-
 def require_role(*roles):
     def deco(fn):
         @wraps(fn)
         def wrapper(*args, **kwargs):
-            # ✅ Permitir preflight CORS sin sesión
-            if request.method == "OPTIONS":
-                return ("", 200)
-
-            r = (session.get("role") or "").upper()
-            allowed = {str(x).upper() for x in roles}
-
+            r = session.get("role")
             if not r:
                 return jsonify({"ok": False, "error": "No autenticado"}), 401
-            if r not in allowed:
+            if r not in roles:
                 return jsonify({"ok": False, "error": "No autorizado"}), 403
-
             return fn(*args, **kwargs)
         return wrapper
     return deco
-
 
 #  Verifica que un ADMIN solo acceda a pedidos propios
 def forbid_if_not_owner(cur, pedido_id: int):
@@ -844,24 +832,12 @@ def api_public_qr_banco():
     row = cur.fetchone()
     conn.close()
 
-    # Soportar row como dict (RealDictCursor) o tuple/list
-    if not row:
+    if not row or not row[1]:
         return ("QR no configurado", 404)
 
-    if isinstance(row, dict):
-        mime = row.get("mime") or "image/png"
-        data = row.get("data")
-    else:
-        mime = (row[0] or "image/png")
-        data = row[1] if len(row) > 1 else None
-
-    if not data:
-        return ("QR no configurado", 404)
-
-    # Nombre coherente con el tipo real
-    filename = "qr-banco.webp" if (mime or "").lower() == "image/webp" else "qr-banco.png"
-
-    resp = send_file(BytesIO(data), mimetype=mime, download_name=filename, conditional=False)
+    mime, data = row[0] or "image/png", row[1]
+    resp = send_file(BytesIO(data), mimetype=mime, download_name="qr-banco.png", conditional=False)
+    # Evitar cache para que cuando cambies el QR se vea al instante
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
     return resp
@@ -870,74 +846,23 @@ def api_public_qr_banco():
 @app.route('/api/admin/qr-banco', methods=['POST'])
 @require_role("SUPER_ADMIN", "ADMIN")
 def api_admin_qr_banco_upload():
-    """Sube/actualiza el QR bancario (solo ADMIN/SUPER_ADMIN).
-    Acepta captura/foto grande del celular, la recorta al centro y la comprime a WEBP.
-    """
+    """Sube/actualiza el QR bancario (solo ADMIN/SUPER_ADMIN)."""
     f = request.files.get("file") or request.files.get("qr")
     if not f:
         return jsonify({"ok": False, "error": "Falta archivo (field 'file' o 'qr')."}), 400
 
-    # Aceptamos formatos comunes del celular
-    mime_in = (f.mimetype or "").lower()
-    if mime_in not in ("image/png", "image/jpeg", "image/jpg", "image/webp"):
+    # Validar tipo (aceptamos fotos del celular también)
+    mime = (f.mimetype or "").lower()
+    if mime not in ("image/png", "image/jpeg", "image/jpg", "image/webp"):
         return jsonify({"ok": False, "error": "Formato no válido. Usa PNG/JPG/WEBP."}), 400
 
-    raw = f.read()
-    if not raw or len(raw) < 200:
+    data = f.read()
+    if not data or len(data) < 200:
         return jsonify({"ok": False, "error": "Imagen vacía o inválida."}), 400
 
-    # Límite de entrada (para no reventar memoria). Capturas del cel suelen estar < 10MB.
-    if len(raw) > 12_000_000:
-        return jsonify({"ok": False, "error": "Imagen muy grande (máx 12MB)."}), 400
-
-    # --- Procesar: recorte centrado + resize + compresión WEBP ---
-    try:
-        im = Image.open(BytesIO(raw))
-        im = ImageOps.exif_transpose(im)  # respeta rotación de fotos del celular
-        im.load()
-
-        w, h = im.size
-
-        # Si es captura vertical/horizontal grande, recortamos al cuadrado del centro (donde suele estar el QR)
-        if w == 0 or h == 0:
-            raise ValueError("Imagen inválida (0x0).")
-
-        side = min(w, h)
-        left = (w - side) // 2
-        top = (h - side) // 2
-        im = im.crop((left, top, left + side, top + side))
-
-        # Reducir tamaño final: suficiente para escaneo, rápido de cargar
-        MAX_SIDE = 1024
-        w2, h2 = im.size
-        if max(w2, h2) > MAX_SIDE:
-            scale = MAX_SIDE / float(max(w2, h2))
-            im = im.resize((int(w2 * scale), int(h2 * scale)), Image.LANCZOS)
-
-        # Convertir modo
-        if im.mode not in ("RGB", "RGBA"):
-            im = im.convert("RGB")
-
-        # Guardar a WEBP con calidad adaptativa (buscamos <= ~900KB)
-        out = BytesIO()
-        q = 85
-        while True:
-            out.seek(0)
-            out.truncate(0)
-            im.save(out, format="WEBP", quality=q, method=6)
-            data = out.getvalue()
-            if len(data) <= 900_000 or q <= 60:
-                break
-            q -= 5
-
-        mime = "image/webp"
-
-    except Exception:
-        # Si por alguna razón Pillow falla, guardamos el original (pero controlamos tamaño)
-        if len(raw) > 2_000_000:
-            return jsonify({"ok": False, "error": "No se pudo procesar la imagen. Intenta exportar a WEBP 80% (Photopea) y vuelve a subir."}), 400
-        data = raw
-        mime = mime_in or "image/png"
+    # límite de tamaño (2MB)
+    if len(data) > 2_000_000:
+        return jsonify({"ok": False, "error": "Imagen muy grande (máx 2MB)."}), 400
 
     sha = hashlib.sha256(data).hexdigest()
     now = datetime.utcnow()
@@ -957,8 +882,7 @@ def api_admin_qr_banco_upload():
     conn.commit()
     conn.close()
 
-    return jsonify({"ok": True, "sha256": sha, "updated_at": now.isoformat(), "mime": mime, "bytes": len(data)})
-
+    return jsonify({"ok": True, "sha256": sha, "updated_at": now.isoformat()})
 
 
 # =========================================================
@@ -3037,43 +2961,33 @@ def api_product_overrides_all():
     conn.close()
     return jsonify({"ok": True, "overrides": rows})
 
-@app.route("/api/admin/actualizar-precios", methods=["POST", "OPTIONS"])
+@app.route("/api/admin/actualizar-precios", methods=["POST"])
 @require_role("SUPER_ADMIN")
 def api_actualizar_precios():
-    if request.method == "OPTIONS":
-        return ("", 200)
-
     if actualizar_precios is None:
         return jsonify({
             "ok": False,
             "error": "Módulo actualizar_precios no disponible en el servidor"
         }), 500
 
-    try:
-        r = actualizar_precios()
+    r = actualizar_precios()
 
-        # Compatibilidad con el panel (evita "undefined")
-        if isinstance(r, dict):
-            r.setdefault("updated", r.get("actualizados"))
-            r.setdefault("missing", r.get("en_json_no_en_excel"))
-            r.setdefault("rows", r.get("filas_excel_validas"))
-            r.setdefault("discount", r.get("descuento_proveedor"))
+    # Compatibilidad con el panel (evita "undefined")
+    if isinstance(r, dict):
+        # Nombres nuevos (del script)
+        # actualizados, creados_nuevos, filas_excel_validas, descuento_proveedor, en_json_no_en_excel
+        r.setdefault("updated", r.get("actualizados"))
+        r.setdefault("missing", r.get("en_json_no_en_excel"))
+        r.setdefault("rows", r.get("filas_excel_validas"))
+        r.setdefault("discount", r.get("descuento_proveedor"))
 
-            r.setdefault("filas_excel", r.get("filas_excel_validas"))
-            r.setdefault("descuento", r.get("descuento_proveedor"))
-            r.setdefault("nuevos", r.get("nuevos") if r.get("nuevos") is not None else len(r.get("nuevos_codigos") or []))
-            r.setdefault("nuevos_codigos", r.get("nuevos_codigos") or [x.get("code") for x in (r.get("nuevos_detectados") or []) if isinstance(x, dict)])
+        # Si el admin.html use estos nombres en español, también los dejamos
+        r.setdefault("filas_excel", r.get("filas_excel_validas"))
+        r.setdefault("descuento", r.get("descuento_proveedor"))
+        r.setdefault("nuevos", r.get("nuevos") if r.get("nuevos") is not None else len(r.get("nuevos_codigos") or []))
+        r.setdefault("nuevos_codigos", r.get("nuevos_codigos") or [x.get("code") for x in (r.get("nuevos_detectados") or []) if isinstance(x, dict)])
 
-        return jsonify(r), (200 if r.get("ok") else 400)
-
-    except Exception as e:
-        import traceback
-        return jsonify({
-            "ok": False,
-            "error": f"Fallo en actualizar_precios(): {str(e)}",
-            "trace": traceback.format_exc()
-        }), 500
-
+    return jsonify(r), (200 if r.get("ok") else 400)
 
 
 
