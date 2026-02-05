@@ -205,7 +205,7 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
     upsert_params = []
     new_params = []
     override_params = []
-    BATCH_SIZE = 300
+    BATCH_SIZE = 100
 
     # ===== 5) Procesar Excel =====
     for code, ex in excel_by_code.items():
@@ -260,6 +260,8 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
                     updated_at = EXCLUDED.updated_at
             """, upsert_params)
             upsert_params.clear()
+            conn.commit()
+
 
         if len(new_params) >= BATCH_SIZE:
             execute_batch(cur, """
@@ -269,6 +271,8 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
                 DO NOTHING
             """, new_params)
             new_params.clear()
+            conn.commit()
+
 
         if len(override_params) >= BATCH_SIZE:
             execute_batch(cur, """
@@ -277,6 +281,8 @@ def actualizar_precios(descuento_proveedor: Optional[float] = None):
                 ON CONFLICT (code) DO NOTHING
             """, override_params)
             override_params.clear()
+            conn.commit()
+
 
     # ===== 6) flush final (UNA sola vez) =====
     if upsert_params:
