@@ -3075,6 +3075,10 @@ def api_admin_nuevos_autofill():
     if limit > 20:
         limit = 20
 
+    PLACEHOLDER_IMG = "img/nuevo.jpg"
+    LIKE_NUEVO = "%nuevo%"
+
+
     conn = get_connection()
     cur = conn.cursor()
 
@@ -3091,15 +3095,28 @@ def api_admin_nuevos_autofill():
             WHERE
               COALESCE(promo_label,'') ILIKE 'NUEVO%'
               AND (
-                imagen IS NULL OR imagen='' OR imagen='img/nuevo.jpg' OR imagen ILIKE '%%nuevo%%'
+                imagen IS NULL OR imagen='' OR imagen=%s OR imagen ILIKE %s
               )
             ORDER BY code
             LIMIT %s
             """,
-            (limit,),
+            (PLACEHOLDER_IMG, LIKE_NUEVO, limit),
         )
-        rows = cur.fetchall()
-        codes = [r[0] for r in rows] if rows else []
+        rows = cur.fetchall() or []
+        codes = []
+        for r in rows:
+            if isinstance(r, (list, tuple)):
+                if r:
+                    codes.append(r[0])
+            elif isinstance(r, dict):
+                if r.get("code") is not None:
+                    codes.append(r.get("code"))
+            else:
+                try:
+                    codes.append(r[0])
+                except Exception:
+                    pass
+
 
     # Normalizar lista
     if not isinstance(codes, list):
@@ -3127,7 +3144,7 @@ def api_admin_nuevos_autofill():
                     VALUES (%s, FALSE, %s, FALSE, 0, 'NUEVO')
                     ON CONFLICT (code) DO UPDATE SET
                       imagen = CASE
-                        WHEN producto_overrides.imagen IS NULL OR producto_overrides.imagen='' OR producto_overrides.imagen='img/nuevo.jpg' OR producto_overrides.imagen ILIKE '%%nuevo%%'
+                        WHEN producto_overrides.imagen IS NULL OR producto_overrides.imagen='' OR producto_overrides.imagen=%s OR producto_overrides.imagen ILIKE %s
                         THEN EXCLUDED.imagen
                         ELSE producto_overrides.imagen
                       END,
@@ -3136,7 +3153,7 @@ def api_admin_nuevos_autofill():
                         ELSE producto_overrides.promo_label
                       END
                     """,
-                    (code, img),
+                    (code, img, PLACEHOLDER_IMG, LIKE_NUEVO),
                 )
                 with_image += 1
             else:
