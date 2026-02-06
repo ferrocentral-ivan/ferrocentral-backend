@@ -3091,7 +3091,7 @@ def api_admin_nuevos_autofill():
             WHERE
               COALESCE(promo_label,'') ILIKE 'NUEVO%'
               AND (
-                imagen IS NULL OR imagen='' OR imagen='img/nuevo.jpg' OR imagen ILIKE '%nuevo%'
+                imagen IS NULL OR imagen='' OR imagen='img/nuevo.jpg' OR imagen ILIKE '%%nuevo%%'
               )
             ORDER BY code
             LIMIT %s
@@ -3127,7 +3127,7 @@ def api_admin_nuevos_autofill():
                     VALUES (%s, FALSE, %s, FALSE, 0, 'NUEVO')
                     ON CONFLICT (code) DO UPDATE SET
                       imagen = CASE
-                        WHEN producto_overrides.imagen IS NULL OR producto_overrides.imagen='' OR producto_overrides.imagen='img/nuevo.jpg' OR producto_overrides.imagen ILIKE '%nuevo%'
+                        WHEN producto_overrides.imagen IS NULL OR producto_overrides.imagen='' OR producto_overrides.imagen='img/nuevo.jpg' OR producto_overrides.imagen ILIKE '%%nuevo%%'
                         THEN EXCLUDED.imagen
                         ELSE producto_overrides.imagen
                       END,
