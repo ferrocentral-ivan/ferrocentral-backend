@@ -3077,6 +3077,7 @@ def api_admin_nuevos_autofill():
 
     PLACEHOLDER_IMG = "img/nuevo.jpg"
     LIKE_NUEVO = "%nuevo%"
+    NUEVO_PREFIX = "NUEVO%"
 
 
     conn = get_connection()
@@ -3088,20 +3089,17 @@ def api_admin_nuevos_autofill():
 
     # Si no vienen codes, buscamos los "NUEVO" sin imagen (o con placeholder)
     if not codes:
-        cur.execute(
-            """
-            SELECT code
-            FROM producto_overrides
-            WHERE
-              COALESCE(promo_label,'') ILIKE 'NUEVO%'
-              AND (
-                imagen IS NULL OR imagen='' OR imagen=%s OR imagen ILIKE %s
-              )
-            ORDER BY code
-            LIMIT %s
-            """,
-            (PLACEHOLDER_IMG, LIKE_NUEVO, limit),
+        cur.execute("""
+        SELECT code
+        FROM producto_overrides
+        WHERE
+        COALESCE(promo_label,'') ILIKE %s
+        AND (
+            imagen IS NULL OR imagen='' OR imagen=%s OR imagen ILIKE %s
         )
+        ORDER BY code
+        LIMIT %s
+        """, (NUEVO_PREFIX, PLACEHOLDER_IMG, LIKE_NUEVO, limit))
         rows = cur.fetchall() or []
         codes = []
         for r in rows:
