@@ -849,7 +849,16 @@ def api_public_qr_banco():
     if not data:
         return ("QR no configurado", 404)
 
-    return (data, 200, {"Content-Type": mime, "Cache-Control": "no-store"})
+        # psycopg2 suele devolver BYTEA como memoryview → convertir a bytes
+    if isinstance(data, memoryview):
+        data = data.tobytes()
+
+    bio = BytesIO(data)
+
+    resp = send_file(bio, mimetype=mime)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
 
 
 
