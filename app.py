@@ -2421,6 +2421,7 @@ def api_productos_precios_json():
     resp = make_response(send_file(path, mimetype="application/json"))
     # importante: evitar caché para que veas cambios rápido
     resp.headers["Cache-Control"] = "public, max-age=600"  # 10 minutos
+    resp.headers["Access-Control-Expose-Headers"] = "ETag"
     return resp
 
 
@@ -2509,6 +2510,7 @@ def api_catalogo():
         resp = Response(body, mimetype="application/json")
         resp.headers["ETag"] = etag_hdr
         resp.headers["Cache-Control"] = "public, max-age=600"  # 10 min
+        resp.headers["Access-Control-Expose-Headers"] = "ETag"
         return resp
 
     # 1) Intentar BD primero
