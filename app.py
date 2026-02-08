@@ -861,38 +861,40 @@ def api_admin_qr_banco_upload():
     if not f:
         return jsonify({"ok": False, "error": "Falta archivo (field 'file' o 'qr')."}), 400
 
-    # Validar tipo (aceptamos fotos del celular también)
-    mime = (f.mimetype or "").lower()
-    if mime not in ("image/png", "image/jpeg", "image/jpg", "image/webp"):
-        return jsonify({"ok": False, "error": "Formato no válido. Usa PNG/JPG/WEBP."}), 400
+    # --- Validar tipo (tolerante a móvil) ---
+    mime = (f.mimetype or "").lower().strip()
+
+    # A veces en móvil llega vacío u octet-stream; inferimos por extensión
+    filename = (getattr(f, "filename", "") or "").lower()
+    ext = os.path.splitext(filename)[1].lower()
+
+    allowed_mimes = {"image/png", "image/jpeg", "image/jpg", "image/webp"}
+    allowed_exts  = {".png", ".jpg", ".jpeg", ".webp"}
+
+    if (mime not in allowed_mimes):
+        # permitir mimetype raro si la extensión es válida
+        if ext in allowed_exts:
+            if ext == ".png":
+                mime = "image/png"
+            elif ext == ".webp":
+                mime = "image/webp"
+            else:
+                mime = "image/jpeg"  # .jpg/.jpeg
+        else:
+            return jsonify({
+                "ok": False,
+                "error": f"Formato no válido ({mime or 'sin mimetype'} / {ext or 'sin extensión'}). Usa PNG/JPG/WEBP."
+            }), 400
 
     data = f.read()
     if not data or len(data) < 200:
         return jsonify({"ok": False, "error": "Imagen vacía o inválida."}), 400
 
-    # límite de tamaño (6MB) - para fotos de celular
-    if len(data) > 6_000_000:
-        return jsonify({"ok": False, "error": "Imagen muy grande (máx 6MB)."}), 400
-
-    sha = hashlib.sha256(data).hexdigest()
-    now = datetime.utcnow()
-
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO app_assets (key, mime, data, sha256, updated_at)
-        VALUES ('bank_qr', %s, %s, %s, %s)
-        ON CONFLICT (key)
-        DO UPDATE SET mime=EXCLUDED.mime,
-                      data=EXCLUDED.data,
-                      sha256=EXCLUDED.sha256,
-                      updated_at=EXCLUDED.updated_at
-    """, (mime, psycopg2.Binary(data) if "psycopg2" in globals() else data, sha, now))
-
-    conn.commit()
-    conn.close()
-
-    return jsonify({"ok": True, "sha256": sha, "updated_at": now.isoformat()})
+    # Subimos límite para fotos de celular (6MB)
+    max_bytes = 6_000_000
+    if len(data) > max_bytes:
+        mb = round(len(data) / 1_000_000, 2)
+        return jsonify({"ok": False, "error": f"Imagen muy grande ({mb}MB). Máximo {max_bytes/1_000_000:.0f}MB."}), 400
 
 
 # =========================================================
