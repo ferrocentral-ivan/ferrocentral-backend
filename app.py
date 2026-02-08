@@ -870,9 +870,9 @@ def api_admin_qr_banco_upload():
     if not data or len(data) < 200:
         return jsonify({"ok": False, "error": "Imagen vacía o inválida."}), 400
 
-    # límite de tamaño (2MB)
-    if len(data) > 2_000_000:
-        return jsonify({"ok": False, "error": "Imagen muy grande (máx 2MB)."}), 400
+    # límite de tamaño (6MB) - para fotos de celular
+    if len(data) > 6_000_000:
+        return jsonify({"ok": False, "error": "Imagen muy grande (máx 6MB)."}), 400
 
     sha = hashlib.sha256(data).hexdigest()
     now = datetime.utcnow()
