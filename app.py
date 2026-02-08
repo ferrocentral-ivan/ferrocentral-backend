@@ -950,10 +950,18 @@ def api_public_search_rubros():
     row = cur.fetchone()
     conn.close()
 
-    if not row or not row[0]:
+    # row puede venir tuple o dict según cursor
+    data = None
+    if not row:
+        data = None
+    elif isinstance(row, dict):
+        data = row.get("data")
+    else:
+        data = row[0]
+
+    if not data:
         return jsonify({"ok": True, "rubros": {}})
 
-    data = row[0]
     if isinstance(data, memoryview):
         data = data.tobytes()
 
@@ -965,6 +973,7 @@ def api_public_search_rubros():
         obj = {}
 
     return jsonify({"ok": True, "rubros": obj})
+
 
 
 @app.route('/api/admin/search-rubros', methods=['POST'])
