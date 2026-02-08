@@ -941,6 +941,76 @@ def api_admin_qr_banco_upload():
     return jsonify({"ok": True, "sha256": sha, "updated_at": now.isoformat()})
 
 
+@app.route('/api/public/search-rubros')
+def api_public_search_rubros():
+    """Devuelve el mapa de rubros -> códigos (público)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT data FROM app_assets WHERE key='search_rubros' LIMIT 1")
+    row = cur.fetchone()
+    conn.close()
+
+    if not row or not row[0]:
+        return jsonify({"ok": True, "rubros": {}})
+
+    data = row[0]
+    if isinstance(data, memoryview):
+        data = data.tobytes()
+
+    try:
+        obj = json.loads(data.decode("utf-8"))
+        if not isinstance(obj, dict):
+            obj = {}
+    except Exception:
+        obj = {}
+
+    return jsonify({"ok": True, "rubros": obj})
+
+
+@app.route('/api/admin/search-rubros', methods=['POST'])
+@require_role("SUPER_ADMIN")
+def api_admin_search_rubros_save():
+    """
+    Guarda rubros desde un textarea:
+    Cada línea: rubro: COD1, COD2, COD3
+    """
+    payload = request.get_json(silent=True) or {}
+    raw = (payload.get("raw") or "").strip()
+
+    rubros = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if ":" not in line:
+            continue
+        name, codes = line.split(":", 1)
+        name = name.strip().lower()
+        codes_list = [c.strip() for c in codes.replace(";", ",").split(",") if c.strip()]
+        if not name or not codes_list:
+            continue
+        rubros[name] = codes_list
+
+    data = json.dumps(rubros, ensure_ascii=False).encode("utf-8")
+    sha = hashlib.sha256(data).hexdigest()
+    now = datetime.utcnow()
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO app_assets (key, mime, data, sha256, updated_at)
+        VALUES ('search_rubros', 'application/json', %s, %s, %s)
+        ON CONFLICT (key)
+        DO UPDATE SET mime=EXCLUDED.mime,
+                      data=EXCLUDED.data,
+                      sha256=EXCLUDED.sha256,
+                      updated_at=EXCLUDED.updated_at
+    """, (psycopg2.Binary(data), sha, now))
+    conn.commit()
+    conn.close()
+
+    return jsonify({"ok": True, "count": len(rubros)})
+
 
 # =========================================================
 # Teleprompter (aviso giratorio) - settings aislado
