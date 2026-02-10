@@ -3,7 +3,13 @@ from flask_cors import CORS
 import os, json, hashlib, secrets
 from datetime import datetime, timedelta
 from io import BytesIO
-from backend.database import get_connection, create_tables
+# --- DB import robusto (soporta estructura con /backend o sin /backend) ---
+try:
+    # Estructura correcta: /backend/database.py
+    from backend.database import get_connection, create_tables
+except Exception:
+    # Fallback: database.py en raíz (por si subes un zip viejo o cambias estructura)
+    from database import get_connection, create_tables
 from werkzeug.security import generate_password_hash, check_password_hash
 try:
     from actualizar_precios_openpyxl import actualizar_precios
@@ -2630,12 +2636,12 @@ def api_catalogo():
             # No cambió → 304 (cero descarga)
             resp = Response(status=304)
             resp.headers["ETag"] = etag_hdr
-            resp.headers["Cache-Control"] = "public, max-age=600"  # 10 min
+            resp.headers["Cache-Control"] = "public, max-age=3600"  # 1 hora
             return resp
 
         resp = Response(body, mimetype="application/json")
         resp.headers["ETag"] = etag_hdr
-        resp.headers["Cache-Control"] = "public, max-age=600"  # 10 min
+        resp.headers["Cache-Control"] = "public, max-age=3600"  # 1 hora
         resp.headers["Access-Control-Expose-Headers"] = "ETag"
         return resp
 
@@ -3101,42 +3107,7 @@ def api_product_overrides_all():
     return jsonify({"ok": True, "overrides": rows})
 
 import re
-import requests
 from urllib.parse import quote
-
-def _truper_find_image_by_code(code: str):
-    """
-    Busca en Truper por código y devuelve una URL de imagen (si encuentra).
-    En modo 'barato' (sin dependencias extra).
-    """
-    code = str(code).strip()
-    if not code:
-        return None
-
-    # 1) Buscar resultados
-    q = quote(code)
-    search_url = f"https://www.truper.com/catalogsearch/result/?q={q}"
-    r = requests.get(search_url, timeout=12)
-    if r.status_code != 200:
-        return None
-
-    html = r.text
-
-    # 2) Intentar sacar primera imagen del listado (varía, pero suele haber <img ... src="...">
-    # Buscamos una imagen que parezca de catálogo
-    m = re.search(r'<img[^>]+src="([^"]+)"', html, re.IGNORECASE)
-    if not m:
-        return None
-
-    img = m.group(1).strip()
-    if not img:
-        return None
-
-    # Normalizar //...
-    if img.startswith("//"):
-        img = "https:" + img
-
-    return img
 
 def _truper_find_image_by_code(code: str):
     """

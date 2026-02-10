@@ -6,7 +6,12 @@ from typing import Optional, Dict, Any, Tuple
 from openpyxl import load_workbook
 from psycopg2.extras import execute_batch
 
-from backend.database import get_connection
+# --- DB import robusto (soporta estructura con /backend o sin /backend) ---
+try:
+    from backend.database import get_connection
+except Exception:
+    from database import get_connection
+
 
 
 SHEET_PRECIOS = "NUEVA LISTA DE PRECIOS"
@@ -57,13 +62,14 @@ def _find_excel_path(base_dir: str) -> Tuple[Optional[str], list]:
 
     env_name = os.environ.get("EXCEL_FILE")
     if env_name:
-        p = os.path.join(base_dir, env_name)
-        checked.append(p)
-        if os.path.exists(p):
-            return p, checked
+        env_name = env_name.strip()
 
-    for name in EXCEL_CANDIDATES:
-        p = os.path.join(base_dir, name)
+        
+        if os.path.isabs(env_name):
+            p = env_name
+        else:
+            p = os.path.join(base_dir, env_name)
+
         checked.append(p)
         if os.path.exists(p):
             return p, checked
