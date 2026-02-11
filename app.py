@@ -462,6 +462,11 @@ try:
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("ALTER TABLE pedido_items ADD COLUMN IF NOT EXISTS precio_final DOUBLE PRECISION")
+
+    # --- MIGRACIÓN SEGURA: reset de contraseña para admins ---
+    cur.execute("ALTER TABLE admins ADD COLUMN IF NOT EXISTS reset_token TEXT")
+    cur.execute("ALTER TABLE admins ADD COLUMN IF NOT EXISTS reset_token_expira TEXT")
+
     # --- MIGRACIÓN SEGURA: tabla para assets (QR bancario, etc.) ---
     cur.execute("""
     CREATE TABLE IF NOT EXISTS app_assets (
@@ -479,7 +484,6 @@ try:
     conn.close()
 
 except Exception as e:
-    # Importante: no crash del proceso (si no, Render reinicia en bucle)
     print("DB INIT ERROR: la app arrancó sin inicializar DB:", e)
 
 
@@ -685,6 +689,96 @@ def api_password_reset():
     conn.close()
 
     return jsonify({"ok": True})
+
+@app.route('/api/admin_password_reset_request', methods=['POST'])
+def api_admin_password_reset_request():
+    data = request.json or {}
+    usuario = (data.get("usuario") or "").strip()
+
+    if not usuario:
+        return jsonify({"ok": False, "error": "Falta correo"}), 400
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT id, username
+        FROM admins
+        WHERE username = %s AND active = true
+    """, (usuario,))
+    row = cur.fetchone()
+
+    # Siempre responder OK por seguridad (no revelar si existe)
+    if row is None:
+        conn.close()
+        return jsonify({"ok": True})
+
+    token = secrets.token_urlsafe(32)
+    expira = (datetime.utcnow() + timedelta(hours=2)).isoformat()
+
+    cur.execute("""
+        UPDATE admins
+        SET reset_token = %s, reset_token_expira = %s
+        WHERE id = %s
+    """, (token, expira, row["id"]))
+
+    conn.commit()
+    conn.close()
+
+    link = f"{BASE_URL}/reset_password_admin.html?token={token}"
+    send_reset_email(row["username"], link)
+
+    return jsonify({"ok": True})
+
+
+@app.route('/api/admin_password_reset', methods=['POST'])
+def api_admin_password_reset():
+    data = request.json or {}
+    token = (data.get("token") or "").strip()
+    new_password = (data.get("password") or "").strip()
+
+    if not token or not new_password:
+        return jsonify({"ok": False, "error": "Faltan datos"}), 400
+
+    if len(new_password) < 6:
+        return jsonify({"ok": False, "error": "La contraseña es muy corta"}), 400
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT id, reset_token_expira
+        FROM admins
+        WHERE reset_token = %s AND active = true
+    """, (token,))
+    row = cur.fetchone()
+
+    if row is None:
+        conn.close()
+        return jsonify({"ok": False, "error": "Enlace inválido"}), 400
+
+    expira_str = row["reset_token_expira"]
+    try:
+        expira = datetime.fromisoformat(expira_str) if expira_str else None
+    except Exception:
+        expira = None
+
+    if not expira or expira < datetime.utcnow():
+        conn.close()
+        return jsonify({"ok": False, "error": "Enlace vencido, solicita uno nuevo"}), 400
+
+    new_hash = generate_password_hash(new_password)
+    cur.execute("""
+        UPDATE admins
+        SET password_hash = %s, reset_token = NULL, reset_token_expira = NULL
+        WHERE id = %s
+    """, (new_hash, row["id"]))
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({"ok": True})
+
 
 
 @app.route('/api/pedido', methods=['POST'])
