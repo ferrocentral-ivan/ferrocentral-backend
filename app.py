@@ -34,8 +34,8 @@ from email.message import EmailMessage
 from urllib.request import Request
 from urllib.parse import quote
 import re
-
-
+import io
+import zipfile
 
 
 
@@ -138,15 +138,15 @@ def send_reset_email(to_email, link):
     subject = "Restablecer contraseña - Ferrocentral"
     body_text = f"""Hola,
 
-Se solicitó restablecer la contraseña de tu cuenta en Ferrocentral.
+    Se solicitó restablecer la contraseña de tu cuenta en Ferrocentral.
 
-Abre este enlace para crear una nueva contraseña:
-{link}
+    Abre este enlace para crear una nueva contraseña:
+    {link}
 
-Si tú no solicitaste este cambio, puedes ignorar este correo.
+    Si tú no solicitaste este cambio, puedes ignorar este correo.
 
-Ferrocentral
-"""
+    Ferrocentral
+    """
 
     # =========================================================
     # 1) RESEND (HTTPS) - recomendado para Render
@@ -3248,6 +3248,63 @@ def _truper_find_image_by_code(code: str):
     return img
 
 
+def _fetch_bytes(url: str, timeout=20):
+    req = Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; FerroCentralBot/1.0)"})
+    with urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+
+def _truper_scrape_assets(code: str, max_imgs=5):
+    code = str(code).strip()
+    if not code:
+        return {"images": [], "pdf": None, "title": f"Producto {code}", "text": ""}
+
+    # 1) Buscar resultado por código
+    search_url = f"https://www.truper.com/catalogsearch/result/?q={quote(code)}"
+    html = ""
+    try:
+        html = _fetch_bytes(search_url, timeout=15).decode("utf-8", errors="ignore")
+    except Exception:
+        return {"images": [], "pdf": None, "title": f"Producto {code}", "text": ""}
+
+    # 2) Intentar encontrar URL de producto
+    m = re.search(r'href="(https?://www\.truper\.com/[^"]+\.html)"', html, re.IGNORECASE)
+    product_url = m.group(1) if m else None
+
+    page_html = html
+    if product_url:
+        try:
+            page_html = _fetch_bytes(product_url, timeout=15).decode("utf-8", errors="ignore")
+        except Exception:
+            page_html = html
+
+    # 3) Título
+    mt = re.search(r'<h1[^>]*class="[^"]*page-title[^"]*"[^>]*>.*?<span[^>]*>(.*?)</span>', page_html, re.IGNORECASE | re.DOTALL)
+    title = re.sub(r"<.*?>", " ", (mt.group(1) if mt else f"Producto {code}"))
+    title = re.sub(r"\s+", " ", title).strip()
+
+    # 4) Imágenes: todas las media/catalog/product
+    imgs = re.findall(r'(https?://[^"\']+/media/catalog/product/[^"\']+)', page_html, re.IGNORECASE)
+    # limpiar y deduplicar
+    uniq = []
+    for u in imgs:
+        u = u.strip()
+        if u and u not in uniq:
+            uniq.append(u)
+    uniq = uniq[:max_imgs]
+
+    # 5) PDF: cualquier .pdf (si hay varios, prioriza el que contiene "ficha")
+    pdfs = re.findall(r'(https?://[^"\']+\.pdf)', page_html, re.IGNORECASE)
+    pdf = None
+    if pdfs:
+        ficha = [p for p in pdfs if "ficha" in p.lower()]
+        pdf = (ficha[0] if ficha else pdfs[0]).strip()
+
+    # 6) Texto simple (por ahora: título)
+    return {"images": uniq, "pdf": pdf, "title": title, "text": title}
+
+
+
 @app.route("/api/admin/nuevos/autofill", methods=["POST"])
 @require_role("SUPER_ADMIN")
 def api_admin_nuevos_autofill():
@@ -3444,6 +3501,163 @@ def api_autofill_nuevos():
     conn.close()
 
     return jsonify({"ok": True, "processed": len(results), "results": results})
+
+def _truper_fetch_zip_assets_by_code(code: str, max_images: int = 5):
+    """
+    Devuelve:
+      - pdf_bytes (o None)
+      - list_img_bytes (0..max_images)
+      - errores (lista de strings)
+    Fuente real:
+      - buscador/?keyword=CODE  (saca el ID)
+      - ficha_tecnica_pdf/...ficha-print.php?id=ID
+      - BancoContenidoDigital/...producto/view&id=ID  (saca links descargarArchivo)
+    """
+    errors = []
+    code = str(code).strip()
+    if not code or not code.isdigit():
+        return None, [], [f"Código inválido: {code}"]
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; FerroCentralBot/1.0)",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+
+    # 1) Buscar ID desde buscador
+    busc_url = f"https://www.truper.com/buscador/?keyword={code}"
+    try:
+        req = Request(busc_url, headers=headers)
+        with urlopen(req, timeout=20) as resp:
+            busc_html = resp.read().decode("utf-8", errors="ignore")
+    except Exception as e:
+        return None, [], [f"[{code}] No pude abrir buscador Truper: {e}"]
+
+    m_id = re.search(r"ficha_tecnica_pdf/views/ficha-print\.php\?id=(\d+)", busc_html, re.IGNORECASE)
+    if not m_id:
+        return None, [], [f"[{code}] No encontré el ID de ficha en buscador"]
+
+    ficha_id = m_id.group(1)
+
+    # 2) Descargar PDF ficha técnica
+    pdf_bytes = None
+    pdf_url = f"https://www.truper.com/ficha_tecnica_pdf/views/ficha-print.php?id={ficha_id}"
+    try:
+        req = Request(pdf_url, headers=headers)
+        with urlopen(req, timeout=30) as resp:
+            pdf_bytes = resp.read()
+    except Exception as e:
+        errors.append(f"[{code}] No pude bajar PDF ficha: {e}")
+        pdf_bytes = None
+
+    # 3) Banco de fotos (si no aparece ID banco, usamos el mismo ficha_id)
+    m_banco = re.search(r"BancoContenidoDigital/index\.php\?r=producto/view&id=(\d+)", busc_html, re.IGNORECASE)
+    banco_id = m_banco.group(1) if m_banco else ficha_id
+
+    banco_url = f"https://www.truper.com/BancoContenidoDigital/index.php?r=producto/view&id={banco_id}"
+    banco_html = ""
+    try:
+        req = Request(banco_url, headers=headers)
+        with urlopen(req, timeout=25) as resp:
+            banco_html = resp.read().decode("utf-8", errors="ignore")
+    except Exception as e:
+        errors.append(f"[{code}] No pude abrir BancoContenidoDigital: {e}")
+        banco_html = ""
+
+    # links reales de imagen (descargarArchivo)
+    links = re.findall(
+        r'href="(https?://www\.truper\.com/BancoContenidoDigital/index\.php\?r=producto/descargarArchivo&id=\d+)"',
+        banco_html,
+        flags=re.IGNORECASE
+    )
+
+    # quitar duplicados preservando orden
+    seen = set()
+    clean_links = []
+    for lk in links:
+        if lk not in seen:
+            seen.add(lk)
+            clean_links.append(lk)
+
+    img_bytes_list = []
+    if not clean_links:
+        errors.append(f"[{code}] No encontré links de imágenes en BancoContenidoDigital")
+    else:
+        for lk in clean_links[:max_images]:
+            try:
+                req = Request(lk, headers=headers)
+                with urlopen(req, timeout=30) as resp:
+                    img_bytes_list.append(resp.read())
+            except Exception as e:
+                errors.append(f"[{code}] Error bajando imagen: {e}")
+
+    return pdf_bytes, img_bytes_list, errors
+
+
+@app.route("/api/admin/nuevos/export-zip", methods=["POST"])
+@require_role("ADMIN", "SUPER_ADMIN")
+def api_admin_nuevos_export_zip():
+    """
+    Recibe: { codes: ["104010","103829", ...] }
+    Devuelve: ZIP con carpetas por código listas para subir a Hostinger.
+    NO toca BD. NO cambia catálogo. Solo exporta.
+    """
+    payload = request.get_json(silent=True) or {}
+    codes = payload.get("codes") or []
+    codes = [str(c).strip() for c in codes if str(c).strip().isdigit()]
+
+    if not codes:
+        return jsonify({"ok": False, "error": "No se enviaron códigos"}), 400
+
+    mem = io.BytesIO()
+    zf = zipfile.ZipFile(mem, "w", zipfile.ZIP_DEFLATED)
+
+    all_errors = []
+    ts = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    for code in codes:
+        pdf_bytes, img_bytes_list, errs = _truper_fetch_zip_assets_by_code(code, max_images=5)
+        all_errors.extend(errs)
+
+        # carpeta base
+        base = f"{code}/"
+        img_base = f"{code}/images/"
+
+        # PDF
+        if pdf_bytes:
+            zf.writestr(f"{base}{code}-ficha.pdf", pdf_bytes)
+
+        # Imágenes
+        for i, b in enumerate(img_bytes_list, start=1):
+            zf.writestr(f"{img_base}{code}-{i}.jpg", b)
+
+        # ficha.json (mínimo, estable)
+        ficha = {
+            "codigo": code,
+            "generated_at": ts,
+            "pdf": f"{code}-ficha.pdf" if pdf_bytes else None,
+            "images": [f"images/{code}-{i}.jpg" for i in range(1, len(img_bytes_list) + 1)],
+            "source": "truper.com",
+        }
+        zf.writestr(f"{base}ficha.json", json.dumps(ficha, ensure_ascii=False, indent=2))
+
+        # ficha_texto.json (placeholder estable; si luego quieres texto real, lo extendemos)
+        ficha_texto = {
+            "codigo": code,
+            "generated_at": ts,
+            "texto": [],
+            "raw_text": ""
+        }
+        zf.writestr(f"{base}ficha_texto.json", json.dumps(ficha_texto, ensure_ascii=False, indent=2))
+
+    if all_errors:
+        zf.writestr("ERRORES.txt", "\n".join(all_errors))
+
+    zf.close()
+    mem.seek(0)
+
+    filename = f"truper_export_nuevos_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.zip"
+    return send_file(mem, mimetype="application/zip", as_attachment=True, download_name=filename)
+
 
 
 @app.route("/api/admin/actualizar-precios", methods=["POST"])
