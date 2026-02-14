@@ -2655,15 +2655,15 @@ def api_productos_precios_json():
 @app.route("/api/productos/<code>")
 def api_producto_por_codigo(code):
     """
-    Devuelve un producto buscando el código en el JSON disponible.
-    Soporta claves: code, codigo, sku, id (y variantes)
-    y normaliza valores tipo "17823.0" vs "17823".
+    Devuelve un producto por código.
+    1) Fuente de verdad: PostgreSQL (productos_catalogo) igual que /api/catalogo
+    2) Fallback: productos_precios.json / productos.json (para no romper)
     """
-    import re
+    import re, json, os
 
     def norm(v):
         s = str(v or "").strip()
-        # si viene como "17823.0" -> "17823"
+        # "17823.0" -> "17823"
         if re.fullmatch(r"\d+(\.0+)?", s):
             try:
                 return str(int(float(s)))
@@ -2673,7 +2673,7 @@ def api_producto_por_codigo(code):
 
     wanted = norm(code)
 
-        # 0) PRIMERO: intentar en PostgreSQL (misma fuente que /api/catalogo)
+    # 0) PRIMERO: buscar en PostgreSQL (misma fuente que /api/catalogo)
     try:
         conn = get_connection()
         cur = conn.cursor()
@@ -2698,12 +2698,11 @@ def api_producto_por_codigo(code):
 
         if row and row[0]:
             return jsonify({"ok": True, "producto": row[0]})
-    except Exception as e:
-        # Si por algo falla BD, seguimos con el fallback JSON como antes
+    except Exception:
+        # si falla BD, seguimos con fallback JSON
         pass
 
-
-    # 1) Preferir productos_precios.json si existe (normalmente ahí está el catálogo real con precios)
+    # 1) Fallback a JSON local (por compatibilidad)
     base_dir = os.path.dirname(os.path.abspath(__file__))
     candidates = ["productos_precios.json", "productos.json"]
 
@@ -2721,21 +2720,19 @@ def api_producto_por_codigo(code):
             last_err = e
 
     if productos is None:
-        return jsonify({"ok": False, "error": f"No se pudo leer productos_precios.json ni productos.json ({last_err})"}), 500
+        return jsonify({"ok": False, "error": f"No se pudo leer JSON ({last_err})"}), 500
 
     if not isinstance(productos, list):
         return jsonify({"ok": False, "error": "El archivo de productos no es una lista"}), 500
 
-    # claves posibles
     keys = ["code", "codigo", "sku", "id", "CODIGO", "Código", "Codigo"]
-
     for p in productos:
         for k in keys:
-            if k in p:
-                if norm(p.get(k)) == wanted:
-                    return jsonify({"ok": True, "producto": p})
+            if k in p and norm(p.get(k)) == wanted:
+                return jsonify({"ok": True, "producto": p})
 
     return jsonify({"ok": False, "error": "Producto no encontrado"}), 404
+
 
 
 @app.route("/api/catalogo")
