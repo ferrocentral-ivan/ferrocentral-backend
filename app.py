@@ -2681,12 +2681,17 @@ def api_producto_por_codigo(code):
             SELECT data
             FROM productos_catalogo
             WHERE
+                code = %s OR
                 data->>'code'   = %s OR
                 data->>'codigo' = %s OR
                 data->>'sku'    = %s OR
-                data->>'id'     = %s
+                data->>'id'     = %s OR
+                data->>'CODIGO' = %s OR
+                data->>'Codigo' = %s OR
+                data->>'Código' = %s
             LIMIT 1
-        """, (wanted, wanted, wanted, wanted))
+        """, (wanted, wanted, wanted, wanted, wanted, wanted, wanted, wanted))
+
         row = cur.fetchone()
         cur.close()
         conn.close()
