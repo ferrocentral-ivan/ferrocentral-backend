@@ -2731,7 +2731,39 @@ def api_producto_por_codigo(code):
             if k in p and norm(p.get(k)) == wanted:
                 return jsonify({"ok": True, "producto": p})
 
-    return jsonify({"ok": False, "error": "Producto no encontrado"}), 404
+        # 2) ÚLTIMO FALLBACK: intentar leer desde Hostinger (truper_export/<code>/ficha.json)
+        # Esto permite que el Admin encuentre productos que tú agregaste manualmente en el hosting,
+        # aunque aún no existan en la BD de Render.
+        try:
+            import urllib.request
+            import ssl
+
+            url = f"https://ferrocentral.com.bo/truper_export/{wanted}/ficha.json"
+
+            ctx = ssl.create_default_context()
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "Mozilla/5.0"}
+            )
+
+            with urllib.request.urlopen(req, timeout=6, context=ctx) as r:
+                if r.status == 200:
+                    raw = r.read().decode("utf-8", errors="replace")
+                    remote = json.loads(raw)
+
+                    # normalizar claves mínimas por compatibilidad del panel
+                    if isinstance(remote, dict):
+                        if not remote.get("code") and remote.get("codigo"):
+                            remote["code"] = str(remote.get("codigo")).strip()
+                        if not remote.get("codigo") and remote.get("code"):
+                            remote["codigo"] = str(remote.get("code")).strip()
+
+                    return jsonify({"ok": True, "producto": remote})
+        except Exception:
+            pass
+
+        return jsonify({"ok": False, "error": "Producto no encontrado"}), 404
+
 
 
 
