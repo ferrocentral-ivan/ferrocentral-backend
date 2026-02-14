@@ -2673,6 +2673,31 @@ def api_producto_por_codigo(code):
 
     wanted = norm(code)
 
+        # 0) PRIMERO: intentar en PostgreSQL (misma fuente que /api/catalogo)
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT data
+            FROM productos_catalogo
+            WHERE
+                data->>'code'   = %s OR
+                data->>'codigo' = %s OR
+                data->>'sku'    = %s OR
+                data->>'id'     = %s
+            LIMIT 1
+        """, (wanted, wanted, wanted, wanted))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+
+        if row and row[0]:
+            return jsonify({"ok": True, "producto": row[0]})
+    except Exception as e:
+        # Si por algo falla BD, seguimos con el fallback JSON como antes
+        pass
+
+
     # 1) Preferir productos_precios.json si existe (normalmente ahí está el catálogo real con precios)
     base_dir = os.path.dirname(os.path.abspath(__file__))
     candidates = ["productos_precios.json", "productos.json"]
