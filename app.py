@@ -1913,10 +1913,18 @@ def factura_custom_pdf(pedido_id):
     if not qr_data:
         conn.close()
         return jsonify({"ok": False, "error": "QR no encontrado en BD."}), 400
-    
-        # psycopg2 puede devolver BYTEA como memoryview
+
+    # psycopg2 puede devolver BYTEA como memoryview
     if isinstance(qr_data, memoryview):
         qr_data = qr_data.tobytes()
+
+
+    def _pdf_text(s):
+        if s is None:
+            return ""
+        s = str(s)
+        return s.encode("cp1252", errors="replace").decode("cp1252")
+    
 
 
     # Cabecera pedido + empresa (solo necesitamos razon/nit + descuento para calcular si falta precio_final)
