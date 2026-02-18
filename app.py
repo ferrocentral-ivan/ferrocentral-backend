@@ -1488,17 +1488,12 @@ def proforma_pdf(pedido_id):
     header_h = 45
 
     def _draw_proforma_header():
-        c.setFillColor(colors.HexColor("#e53935"))
+        c.setFillColor(colors.HexColor("#356de5"))
         c.rect(0, height - header_h, width, header_h, stroke=0, fill=1)
-
-        texto_y_local = height - (header_h / 2) - 7
 
         c.setFillColor(colors.white)
         c.setFont("Helvetica-Bold", 20)
-        c.drawCentredString(width / 2, texto_y_local, "FACTURA PROFORMA")
-
-        c.setFont("Helvetica-Bold", 12)
-        c.drawRightString(width - 50, texto_y_local, f"N° {pedido_id}")
+        c.drawCentredString(width / 2, texto_y, "PROFORMA")
 
         c.setFillColor(colors.black)
 
@@ -1548,7 +1543,7 @@ def proforma_pdf(pedido_id):
     y -= 12
     c.drawCentredString(width / 2, y, "Of: Calle David Avestegui #555 Queru Queru Central")
     y -= 12
-    c.drawCentredString(width / 2, y, "Tel.Fijo: 4792110 - WhatsApp: 76920918")
+    c.drawCentredString(width / 2, y, "Tel.Fijo: 4792110 - WhatsApp: 69519298")
 
     # Datos cliente
     y -= 35
@@ -2047,7 +2042,7 @@ def factura_custom_pdf(pedido_id):
     y -= 12
     c.drawCentredString(width / 2, y, "Of: Calle David Avestegui #555 Queru Queru Central")
     y -= 12
-    c.drawCentredString(width / 2, y, "Tel.Fijo: 4792110 - WhatsApp: 76920918")
+    c.drawCentredString(width / 2, y, "Tel.Fijo: 4792110 - WhatsApp: 69519298")
 
     # Datos cliente (SOLO razón social + NIT)
     y -= 35
@@ -2361,7 +2356,7 @@ def generar_factura_pdf(pedido_id):
     c.setFont("Helvetica", 10)
     c.drawString(170, height - 125, "NIT: 454443545")
     c.drawString(170, height - 140, "Of: Calle David Avestegui #555 Queru Queru Central")
-    c.drawString(170, height - 155, "Tel.Fijo: 4792110 - WhatsApp: 76920918")
+    c.drawString(170, height - 155, "Tel.Fijo: 4792110 - WhatsApp: 69519298")
 
     # Datos cliente
     y = height - 190
