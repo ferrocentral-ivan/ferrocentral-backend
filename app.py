@@ -1979,17 +1979,15 @@ def factura_custom_pdf(pedido_id):
         return s.encode("cp1252", errors="replace").decode("cp1252")
 
     def _draw_factura_header():
-        c.setFillColor(colors.HexColor("#e53935"))
+        c.setFillColor(colors.HexColor("#3564e5"))
         c.rect(0, height - header_h, width, header_h, stroke=0, fill=1)
-
-        texto_y = height - (header_h / 2) - 7
 
         c.setFillColor(colors.white)
         c.setFont("Helvetica-Bold", 20)
-        c.drawCentredString(width / 2, texto_y, "FACTURA")
+        c.drawCentredString(width / 2, texto_y, "PROFORMA")
 
         c.setFont("Helvetica-Bold", 12)
-        c.drawRightString(width - 50, texto_y, f"N° {factura_nro}")
+        c.drawRightString(width - 50, texto_y, f"N° {pedido_id}")
 
         c.setFillColor(colors.black)
 
