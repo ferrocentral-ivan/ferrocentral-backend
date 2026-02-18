@@ -1913,6 +1913,11 @@ def factura_custom_pdf(pedido_id):
     if not qr_data:
         conn.close()
         return jsonify({"ok": False, "error": "QR no encontrado en BD."}), 400
+    
+        # psycopg2 puede devolver BYTEA como memoryview
+    if isinstance(qr_data, memoryview):
+        qr_data = qr_data.tobytes()
+
 
     # Cabecera pedido + empresa (solo necesitamos razon/nit + descuento para calcular si falta precio_final)
     cur.execute("""
@@ -1970,23 +1975,23 @@ def factura_custom_pdf(pedido_id):
     c = canvas.Canvas(buffer, pagesize=letter)
     width, height = letter
 
-    # Encabezado (franja roja) - PROFORMA centrado
+        # Encabezado (franja ROJA) - FACTURA centrado
     header_h = 45
 
-    def _draw_proforma_header():
-        c.setFillColor(colors.HexColor("#3564e5"))  # rojo
+    def _draw_factura_header():
+        c.setFillColor(colors.HexColor("#e53935"))  # rojo
         c.rect(0, height - header_h, width, header_h, stroke=0, fill=1)
 
-        texto_y = height - (header_h / 2) - 7  # ✅ define texto_y
+        texto_y = height - (header_h / 2) - 7
 
         c.setFillColor(colors.white)
         c.setFont("Helvetica-Bold", 20)
-        c.drawCentredString(width / 2, texto_y, "PROFORMA")
+        c.drawCentredString(width / 2, texto_y, "FACTURA")
 
         c.setFillColor(colors.black)
 
-
     _draw_factura_header()
+
 
     # Logo (igual que proforma)
     base_dir = os.path.dirname(os.path.abspath(__file__))
