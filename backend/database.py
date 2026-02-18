@@ -138,5 +138,18 @@ def create_tables():
     """)
 
 
+        # ===== FACTURA CUSTOM (QR embebido + numeración propia) =====
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS factura_custom (
+        pedido_id INTEGER PRIMARY KEY,
+        factura_nro INTEGER NOT NULL UNIQUE,
+        qr_mime TEXT NOT NULL,
+        qr_data BYTEA NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    """)
+
+
+
     conn.commit()
     conn.close()

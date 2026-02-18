@@ -1832,6 +1832,414 @@ def proforma_pdf(pedido_id):
     )
 
 
+@app.route("/api/pedidos/<int:pedido_id>/factura_custom", methods=["POST"])
+@require_role("SUPER_ADMIN", "ADMIN")
+def api_subir_qr_factura_custom(pedido_id):
+    """
+    Guarda QR (imagen) para una FACTURA custom y asigna un número correlativo propio (inicia en 0).
+    Devuelve url para ver el PDF.
+    """
+    f = request.files.get("qr") or request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"ok": False, "error": "Falta imagen del QR (field 'qr' o 'file')."}), 400
+
+    qr_bytes = f.read()
+    if not qr_bytes:
+        return jsonify({"ok": False, "error": "QR vacío."}), 400
+
+    qr_mime = (f.mimetype or "").strip() or "image/jpeg"
+    if not qr_mime.startswith("image/"):
+        return jsonify({"ok": False, "error": "El QR debe ser una imagen (jpg/png/webp)."}), 400
+
+    now = datetime.utcnow().isoformat()
+
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    blocked = forbid_if_not_owner(cur, pedido_id)
+    if blocked:
+        conn.close()
+        return blocked
+
+    # ¿Ya existe factura para este pedido?
+    cur.execute("SELECT factura_nro FROM factura_custom WHERE pedido_id=%s", (pedido_id,))
+    row = cur.fetchone()
+
+    if row and row.get("factura_nro") is not None:
+        factura_nro = int(row["factura_nro"])
+    else:
+        # Asignar correlativo propio empezando en 0
+        cur.execute("SELECT COALESCE(MAX(factura_nro), -1) + 1 AS next_nro FROM factura_custom")
+        factura_nro = int((cur.fetchone() or {}).get("next_nro") or 0)
+
+    cur.execute("""
+        INSERT INTO factura_custom (pedido_id, factura_nro, qr_mime, qr_data, created_at)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (pedido_id) DO UPDATE
+        SET qr_mime = EXCLUDED.qr_mime,
+            qr_data = EXCLUDED.qr_data,
+            created_at = EXCLUDED.created_at
+    """, (pedido_id, factura_nro, qr_mime, psycopg2.Binary(qr_bytes), now))
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "ok": True,
+        "factura_nro": factura_nro,
+        "url": f"/api/factura/{pedido_id}"
+    })
+
+
+@app.route("/api/factura/<int:pedido_id>")
+@require_role("SUPER_ADMIN", "ADMIN")
+def factura_custom_pdf(pedido_id):
+    """
+    Genera PDF de FACTURA (bonito como proforma) con QR embebido.
+    No mezcla numeración con pedido_id; usa factura_custom.factura_nro (inicia en 0).
+    """
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    blocked = forbid_if_not_owner(cur, pedido_id)
+    if blocked:
+        conn.close()
+        return blocked
+
+    # QR + nro factura
+    cur.execute("SELECT factura_nro, qr_mime, qr_data FROM factura_custom WHERE pedido_id=%s", (pedido_id,))
+    frow = cur.fetchone()
+    if not frow:
+        conn.close()
+        return jsonify({"ok": False, "error": "Primero sube el QR para esta factura."}), 400
+
+    factura_nro = int(frow.get("factura_nro") or 0)
+    qr_data = frow.get("qr_data")
+    if not qr_data:
+        conn.close()
+        return jsonify({"ok": False, "error": "QR no encontrado en BD."}), 400
+
+    # Cabecera pedido + empresa (solo necesitamos razon/nit + descuento para calcular si falta precio_final)
+    cur.execute("""
+        SELECT p.id, p.fecha, p.total, p.estado,
+               e.razon_social, e.nit,
+               COALESCE(e.descuento, 0) AS descuento
+        FROM pedidos p
+        JOIN empresas e ON p.empresa_id = e.id
+        WHERE p.id = %s
+    """, (pedido_id,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"ok": False, "error": "Pedido no encontrado"}), 404
+
+    e_razon = row.get("razon_social") or ""
+    e_nit = row.get("nit") or ""
+    e_desc = float(row.get("descuento") or 0)
+
+    # Items (usa precio_final si existe)
+    try:
+        cur.execute("""
+            SELECT descripcion, cantidad, precio_unit, precio_final
+            FROM pedido_items
+            WHERE pedido_id = %s
+            ORDER BY producto_id ASC
+        """, (pedido_id,))
+        items_db = cur.fetchall()
+        has_precio_final = True
+    except Exception:
+        conn.rollback()
+        cur.execute("""
+            SELECT descripcion, cantidad, precio_unit
+            FROM pedido_items
+            WHERE pedido_id = %s
+            ORDER BY producto_id ASC
+        """, (pedido_id,))
+        items_db = cur.fetchall()
+        has_precio_final = False
+
+    conn.close()
+
+    items = []
+    for r in items_db:
+        items.append({
+            "descripcion": (r.get("descripcion") or ""),
+            "cantidad": float(r.get("cantidad") or 0),
+            "precio_unit": float(r.get("precio_unit") or 0),
+            "precio_final": (None if (not has_precio_final or r.get("precio_final") is None)
+                            else float(r.get("precio_final") or 0)),
+        })
+
+    # PDF
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+
+    header_h = 45
+
+    def _pdf_text(s):
+        if s is None:
+            return ""
+        s = str(s)
+        return s.encode("cp1252", errors="replace").decode("cp1252")
+
+    def _draw_factura_header():
+        c.setFillColor(colors.HexColor("#e53935"))
+        c.rect(0, height - header_h, width, header_h, stroke=0, fill=1)
+
+        texto_y = height - (header_h / 2) - 7
+
+        c.setFillColor(colors.white)
+        c.setFont("Helvetica-Bold", 20)
+        c.drawCentredString(width / 2, texto_y, "FACTURA")
+
+        c.setFont("Helvetica-Bold", 12)
+        c.drawRightString(width - 50, texto_y, f"N° {factura_nro}")
+
+        c.setFillColor(colors.black)
+
+    _draw_factura_header()
+
+    # Logo (igual que proforma)
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    logo_path = os.path.join(base_dir, "img", "logos", "logo_empresa.png")
+
+    def _draw_logo(img_source):
+        c.drawImage(
+            img_source,
+            25,
+            height - (header_h + 115),
+            width=195,
+            height=140,
+            preserveAspectRatio=True,
+            mask="auto",
+        )
+
+    try:
+        if os.path.exists(logo_path):
+            _draw_logo(logo_path)
+        else:
+            logo_url = "https://ferrocentral.com.bo/img/logos/logo_empresa.png"
+            with urlopen(logo_url, timeout=10) as resp:
+                data = resp.read()
+            _draw_logo(ImageReader(BytesIO(data)))
+    except Exception as e:
+        print("⚠️ Logo factura no cargado:", e)
+
+    # QR a la derecha (al lado de datos empresa)
+    try:
+        qr_img = ImageReader(BytesIO(qr_data))
+        qr_size = 120
+        qr_x = width - 60 - qr_size
+        qr_y = height - (header_h + 120)
+        c.drawImage(qr_img, qr_x, qr_y, width=qr_size, height=qr_size, preserveAspectRatio=True, mask="auto")
+    except Exception as e:
+        print("⚠️ QR no cargado:", e)
+
+    # Datos empresa (centrados como proforma)
+    y = height - (header_h + 35)
+    c.setFillColor(colors.black)
+    c.setFont("Helvetica-Bold", 12)
+    c.drawCentredString(width / 2, y, "Distribuidora FerroCentral")
+    y -= 15
+    c.setFont("Helvetica", 10)
+    c.drawCentredString(width / 2, y, "NIT: 454443545")
+    y -= 12
+    c.drawCentredString(width / 2, y, "Of: Calle David Avestegui #555 Queru Queru Central")
+    y -= 12
+    c.drawCentredString(width / 2, y, "Tel.Fijo: 4792110 - WhatsApp: 76920918")
+
+    # Datos cliente (SOLO razón social + NIT)
+    y -= 35
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(60, y, "Datos del cliente")
+    y -= 18
+
+    c.setFont("Helvetica", 11)
+    c.drawString(60, y, f"Razón social: {_pdf_text(e_razon)}"); y -= 14
+    c.drawString(60, y, f"NIT: {_pdf_text(e_nit)}"); y -= 10
+
+    # ===== Tabla BONITA (igual que proforma) =====
+    y -= 14
+
+    x0 = 60
+    xR = width - 60
+    col_desc  = x0
+    col_cant  = 345
+    col_pbase = 405
+    col_pdesc = 470
+    col_subt  = 520
+
+    desc_w = col_cant - col_desc - 8
+    grid_color = colors.HexColor("#D9D9D9")
+    header_fill = colors.HexColor("#F3F3F3")
+
+    def wrap_by_width(text, font_name, font_size, max_width):
+        if not text:
+            return [""]
+        words = str(text).split()
+        lines = []
+        cur = ""
+        for w in words:
+            test = (cur + " " + w).strip()
+            if pdfmetrics.stringWidth(test, font_name, font_size) <= max_width:
+                cur = test
+            else:
+                if cur:
+                    lines.append(cur)
+                if pdfmetrics.stringWidth(w, font_name, font_size) <= max_width:
+                    cur = w
+                else:
+                    chunk = ""
+                    for ch in w:
+                        test2 = chunk + ch
+                        if pdfmetrics.stringWidth(test2, font_name, font_size) <= max_width:
+                            chunk = test2
+                        else:
+                            if chunk:
+                                lines.append(chunk)
+                            chunk = ch
+                    cur = chunk
+        if cur:
+            lines.append(cur)
+        return lines
+
+    def draw_table_header(y_top):
+        h = 18
+        c.setFillColor(header_fill)
+        c.rect(x0, y_top - h, xR - x0, h, stroke=0, fill=1)
+        c.setFillColor(colors.black)
+
+        c.setStrokeColor(grid_color)
+        c.setLineWidth(0.6)
+        c.rect(x0, y_top - h, xR - x0, h, stroke=1, fill=0)
+
+        c.line(col_cant,  y_top - h, col_cant,  y_top)
+        c.line(col_pbase, y_top - h, col_pbase, y_top)
+        c.line(col_pdesc, y_top - h, col_pdesc, y_top)
+        c.line(col_subt,  y_top - h, col_subt,  y_top)
+
+        c.setFont("Helvetica-Bold", 8)
+        c.drawString(col_desc + 4, y_top - 13, "Descripción")
+        c.drawCentredString((col_cant + col_pbase) / 2, y_top - 13, "Cant.")
+        c.drawCentredString((col_pbase + col_pdesc) / 2, y_top - 13, "P. Base")
+        c.drawCentredString((col_pdesc + col_subt) / 2, y_top - 13, "P. c/desc")
+        c.drawCentredString((col_subt + xR) / 2, y_top - 13, "Subtotal")
+
+        return y_top - h
+
+    y = draw_table_header(y) - 2
+
+    c.setFont("Helvetica", 8)
+    total_desc = 0.0
+    total_base = 0.0
+    line_h = 10
+    pad_y = 4
+
+    for it in items:
+        desc = _pdf_text(it["descripcion"])
+        cant = it["cantidad"]
+        p_base = it["precio_unit"]
+        p_desc = it["precio_final"] if it.get("precio_final") is not None else (p_base * (1 - e_desc / 100.0))
+        sub = cant * p_desc
+
+        total_desc += sub
+        total_base += cant * p_base
+
+        font_name = "Helvetica"
+        font_size = 8
+        lines = wrap_by_width(desc, font_name, font_size, desc_w)
+        n_lines = max(1, len(lines))
+        row_h = (n_lines * line_h) + (pad_y * 2)
+
+        if y - row_h < 90:
+            c.showPage()
+            _draw_factura_header()
+            y = height - (header_h + 45)
+            y = draw_table_header(y) - 2
+            c.setFont("Helvetica", 8)
+
+        c.setStrokeColor(grid_color)
+        c.setLineWidth(0.6)
+        c.rect(x0, y - row_h, xR - x0, row_h, stroke=1, fill=0)
+
+        c.line(col_cant,  y - row_h, col_cant,  y)
+        c.line(col_pbase, y - row_h, col_pbase, y)
+        c.line(col_pdesc, y - row_h, col_pdesc, y)
+        c.line(col_subt,  y - row_h, col_subt,  y)
+
+        text_y = y - pad_y - 8
+        c.setFont(font_name, font_size)
+        for ln in lines:
+            c.drawString(col_desc + 4, text_y, ln)
+            text_y -= line_h
+
+        mid_y = y - (row_h / 2) - 3
+        c.setFont("Helvetica", 8)
+        c.drawCentredString((col_cant + col_pbase) / 2, mid_y, f"{cant:g}")
+        c.drawRightString(col_pdesc - 6, mid_y, f"{p_base:.2f}")
+        c.drawRightString(col_subt - 6, mid_y, f"{p_desc:.2f}")
+        c.drawRightString(xR - 6, mid_y, f"{sub:.2f}")
+
+        y -= row_h
+
+    # Totales
+    y -= 16
+    box_h = 46
+    if y - box_h < 90:
+        c.showPage()
+        _draw_factura_header()
+        y = height - (header_h + 45)
+        y = draw_table_header(y) - 2
+        c.setFont("Helvetica", 8)
+        y -= 16
+
+    box_x = col_pbase
+    box_w = xR - box_x
+
+    red_bar = colors.HexColor("#e53935")
+    soft_bg = colors.HexColor("#fff5f5")
+    grid    = colors.HexColor("#d9d9d9")
+
+    c.setStrokeColor(grid)
+    c.setLineWidth(0.8)
+    c.setFillColor(soft_bg)
+    c.rect(box_x, y - box_h, box_w, box_h, stroke=1, fill=1)
+
+    bar_h = 14
+    c.setFillColor(red_bar)
+    c.rect(box_x, y - bar_h, box_w, bar_h, stroke=0, fill=1)
+
+    c.setFillColor(colors.white)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(box_x + 8, y - 11, "TOTALES")
+
+    pad_x   = 8
+    right_x = xR - 8
+    line1_y = y - 26
+    line2_y = y - 40
+
+    c.setFillColor(colors.black)
+    c.setFont("Helvetica", 9)
+    c.drawString(box_x + pad_x, line1_y, "Total (sin descuento):")
+    c.drawString(box_x + pad_x, line2_y, "Total (con descuento):")
+
+    c.setFont("Helvetica-Bold", 9)
+    c.drawRightString(right_x, line1_y, f"Bs {total_base:.2f}")
+    c.drawRightString(right_x, line2_y, f"Bs {total_desc:.2f}")
+
+    c.save()
+    buffer.seek(0)
+
+    return send_file(
+        buffer,
+        as_attachment=False,
+        download_name=f"factura_{factura_nro}.pdf",
+        mimetype="application/pdf",
+    )
+
+
+
 @app.route("/api/facturar/<int:pedido_id>")
 @require_role("SUPER_ADMIN", "ADMIN")
 def generar_factura_pdf(pedido_id):
