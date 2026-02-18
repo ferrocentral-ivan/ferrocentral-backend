@@ -1484,12 +1484,14 @@ def proforma_pdf(pedido_id):
     c = canvas.Canvas(buffer, pagesize=letter)
     width, height = letter
 
-    # Encabezado rojo
+    # Encabezado rojo (PROFORMA centrado)
     header_h = 45
 
     def _draw_proforma_header():
-        c.setFillColor(colors.HexColor("#356de5"))
+        c.setFillColor(colors.HexColor("#355ee5"))  # rojo
         c.rect(0, height - header_h, width, header_h, stroke=0, fill=1)
+
+        texto_y = height - (header_h / 2) - 7  # ✅ ahora sí existe
 
         c.setFillColor(colors.white)
         c.setFont("Helvetica-Bold", 20)
@@ -1497,10 +1499,8 @@ def proforma_pdf(pedido_id):
 
         c.setFillColor(colors.black)
 
-
-
-    # Franja roja superior (sin blanco arriba)
     _draw_proforma_header()
+
 
 
 
@@ -1970,26 +1970,21 @@ def factura_custom_pdf(pedido_id):
     c = canvas.Canvas(buffer, pagesize=letter)
     width, height = letter
 
+    # Encabezado (franja roja) - PROFORMA centrado
     header_h = 45
 
-    def _pdf_text(s):
-        if s is None:
-            return ""
-        s = str(s)
-        return s.encode("cp1252", errors="replace").decode("cp1252")
-
-    def _draw_factura_header():
-        c.setFillColor(colors.HexColor("#3564e5"))
+    def _draw_proforma_header():
+        c.setFillColor(colors.HexColor("#3564e5"))  # rojo
         c.rect(0, height - header_h, width, header_h, stroke=0, fill=1)
+
+        texto_y = height - (header_h / 2) - 7  # ✅ define texto_y
 
         c.setFillColor(colors.white)
         c.setFont("Helvetica-Bold", 20)
         c.drawCentredString(width / 2, texto_y, "PROFORMA")
 
-        c.setFont("Helvetica-Bold", 12)
-        c.drawRightString(width - 50, texto_y, f"N° {pedido_id}")
-
         c.setFillColor(colors.black)
+
 
     _draw_factura_header()
 
