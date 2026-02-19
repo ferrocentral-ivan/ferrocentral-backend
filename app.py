@@ -3101,9 +3101,9 @@ def _attach_admin_prices(prod: dict) -> dict:
 
     # Posibles llaves donde podría venir el precio proveedor (Excel)
     excel_candidates = [
-        # proveedor / excel
         "precio_excel", "precio_proveedor", "precioProveedor",
         "costo", "cost", "costo_bs", "costoBs",
+        "precio_bs", "bs_price", "bs",
         "precio_base", "precioBase",
         "precio_lista", "precioLista",
         "price_base", "priceBase",
@@ -3111,8 +3111,8 @@ def _attach_admin_prices(prod: dict) -> dict:
     ]
 
     web_candidates = [
-        # precio final web
         "precio_web", "precio", "price", "pvp",
+        "bs_price_web", "precio_bs_final",
         "precio_final", "precioFinal",
         "precio_venta", "precioVenta",
         "precio_publico", "precioPublico",
