@@ -3100,25 +3100,27 @@ def _attach_admin_prices(prod: dict) -> dict:
         return prod
 
     # Posibles llaves donde podría venir el precio proveedor (Excel)
+    # (en tu pipeline de Excel -> BD se guardan como bs_price_proveedor / bs_price_web / bs_price_descuento25)
     excel_candidates = [
-        "bs_price_descuento25",  # <-- AÑADIR ESTO ARRIBA
+        "bs_price_proveedor",
+        "bs_price_descuento25",
         "precio_excel", "precio_proveedor", "precioProveedor", "precio_prov",
         "precio_dist", "precio_distribuidor", "precio_distrib", "proveedor",
         "excel_price", "price_excel", "costo", "cost", "precio_base",
         "bs_price", "precio_bs", "precioBs", "precio_compra", "precioCompra",
     ]
 
-
     web_candidates = [
+        "bs_price_web",
         "precio_web", "precio", "price", "pvp",
-        "bs_price_web", "precio_bs_final",
+        "precio_bs_final",
         "precio_final", "precioFinal",
         "precio_venta", "precioVenta",
         "precio_publico", "precioPublico",
         "precio_publicado", "precioPublicado",
         "precio_pub", "precioPub",
         "final", "final_bs", "finalBs",
-        "publicado", "publicado_bs", "publicadoBs"
+        "publicado", "publicado_bs", "publicadoBs",
     ]
 
     def pick(cands):
@@ -3132,7 +3134,7 @@ def _attach_admin_prices(prod: dict) -> dict:
             sub = prod.get(nk)
             if isinstance(sub, dict):
                 for k in cands:
-                    if k in sub:
+                    if k in sub and sub.get(k) not in (None, "", 0, "0", "0.0"):
                         val = _to_float_price(sub.get(k))
                         if val is not None:
                             return val
@@ -3141,21 +3143,29 @@ def _attach_admin_prices(prod: dict) -> dict:
     precio_excel = pick(excel_candidates)
     precio_web = pick(web_candidates)
 
-    # Si no encontramos, poner 0.0 pero de forma explícita (para que el panel no quede vacío)
     if precio_excel is None:
         precio_excel = 0.0
     if precio_web is None:
         precio_web = 0.0
 
-    # Adjuntar campos "estándar" (no borra los existentes)
-    prod.setdefault("precio_excel", precio_excel)
-    prod.setdefault("precio_web", precio_web)
+    def _is_zero_like(v):
+        return v in (None, "", 0, "0", "0.0")
+
+    # IMPORTANTE: no usar setdefault aquí, porque en tu BD hay productos con llaves antiguas
+    # (precio_web/precio_excel) guardadas en 0, y eso “bloquea” el valor real (bs_price_web/bs_price_proveedor).
+    if _is_zero_like(prod.get("precio_excel")):
+        prod["precio_excel"] = precio_excel
+    if _is_zero_like(prod.get("precio_web")):
+        prod["precio_web"] = precio_web
 
     # Compatibilidad con paneles antiguos (muchos leen estas llaves)
-    prod.setdefault("precio_proveedor", precio_excel)
-    prod.setdefault("precio", precio_web)
+    if _is_zero_like(prod.get("precio_proveedor")):
+        prod["precio_proveedor"] = prod.get("precio_excel", precio_excel)
+    if _is_zero_like(prod.get("precio")):
+        prod["precio"] = prod.get("precio_web", precio_web)
 
     return prod
+
 
 
 @app.route("/api/productos/<code>")
