@@ -3193,22 +3193,32 @@ def api_producto_por_codigo(code):
     try:
         conn = get_connection()
         cur = conn.cursor()
+                # 0.1) PRIMERO por columna (más estable)
         cur.execute("""
             SELECT data
             FROM productos_catalogo
-            WHERE
-                data->>'code'   = %s OR
-                data->>'codigo' = %s OR
-                data->>'sku'    = %s OR
-                data->>'id'     = %s OR
-                data->>'CODIGO' = %s OR
-                data->>'Codigo' = %s OR
-                data->>'Código' = %s
+            WHERE code = %s
             LIMIT 1
-        """, (wanted, wanted, wanted, wanted, wanted, wanted, wanted))
-
-
+        """, (wanted,))
         row = cur.fetchone()
+
+        # 0.2) Si no encontró por columna, probar por llaves dentro del JSON (compatibilidad)
+        if not row:
+            cur.execute("""
+                SELECT data
+                FROM productos_catalogo
+                WHERE
+                    data->>'code'   = %s OR
+                    data->>'codigo' = %s OR
+                    data->>'sku'    = %s OR
+                    data->>'id'     = %s OR
+                    data->>'CODIGO' = %s OR
+                    data->>'Codigo' = %s OR
+                    data->>'Código' = %s
+                LIMIT 1
+            """, (wanted, wanted, wanted, wanted, wanted, wanted, wanted))
+            row = cur.fetchone()
+
         cur.close()
         conn.close()
 
