@@ -3101,14 +3101,13 @@ def _attach_admin_prices(prod: dict) -> dict:
 
     # Posibles llaves donde podría venir el precio proveedor (Excel)
     excel_candidates = [
-        "precio_excel", "precio_proveedor", "precioProveedor",
-        "costo", "cost", "costo_bs", "costoBs",
-        "precio_bs", "bs_price", "bs",
-        "precio_base", "precioBase",
-        "precio_lista", "precioLista",
-        "price_base", "priceBase",
-        "lista", "lista_bs", "listaBs"
+        "bs_price_descuento25",  # <-- AÑADIR ESTO ARRIBA
+        "precio_excel", "precio_proveedor", "precioProveedor", "precio_prov",
+        "precio_dist", "precio_distribuidor", "precio_distrib", "proveedor",
+        "excel_price", "price_excel", "costo", "cost", "precio_base",
+        "bs_price", "precio_bs", "precioBs", "precio_compra", "precioCompra",
     ]
+
 
     web_candidates = [
         "precio_web", "precio", "price", "pvp",
@@ -3188,7 +3187,6 @@ def api_producto_por_codigo(code):
             SELECT data
             FROM productos_catalogo
             WHERE
-                code = %s OR
                 data->>'code'   = %s OR
                 data->>'codigo' = %s OR
                 data->>'sku'    = %s OR
@@ -3197,7 +3195,8 @@ def api_producto_por_codigo(code):
                 data->>'Codigo' = %s OR
                 data->>'Código' = %s
             LIMIT 1
-        """, (wanted, wanted, wanted, wanted, wanted, wanted, wanted, wanted))
+        """, (wanted, wanted, wanted, wanted, wanted, wanted, wanted))
+
 
         row = cur.fetchone()
         cur.close()
