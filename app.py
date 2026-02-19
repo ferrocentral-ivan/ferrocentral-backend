@@ -3059,6 +3059,104 @@ def api_productos_precios_json():
     resp.headers["Access-Control-Expose-Headers"] = "ETag"
     return resp
 
+def _to_float_price(v):
+    """Convierte precios tipo 'Bs 46,60', '46.60', 46.6, None -> float seguro."""
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        try:
+            return float(v)
+        except Exception:
+            return None
+    s = str(v).strip()
+    if not s:
+        return None
+    # quitar Bs, espacios, etc.
+    s = s.replace("Bs", "").replace("bs", "").strip()
+    # coma decimal -> punto
+    s = s.replace(".", "").replace(",", ".") if ("," in s and "." in s and s.rfind(",") > s.rfind(".")) else s
+    # si viene "1.234,56" (punto miles y coma dec), convertir bien
+    if s.count(",") == 1 and s.count(".") >= 1 and s.rfind(",") > s.rfind("."):
+        s = s.replace(".", "").replace(",", ".")
+    # limpiar caracteres raros
+    s = re.sub(r"[^0-9.\-]", "", s)
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+
+def _attach_admin_prices(prod: dict) -> dict:
+    """
+    Adjunta campos estándar para el panel admin:
+      - precio_excel (proveedor)
+      - precio_web (final web)
+    y compatibilidad:
+      - precio_proveedor
+      - precio
+    SIN romper el JSON original.
+    """
+    if not isinstance(prod, dict):
+        return prod
+
+    # Posibles llaves donde podría venir el precio proveedor (Excel)
+    excel_candidates = [
+        # proveedor / excel
+        "precio_excel", "precio_proveedor", "precioProveedor",
+        "costo", "cost", "costo_bs", "costoBs",
+        "precio_base", "precioBase",
+        "precio_lista", "precioLista",
+        "price_base", "priceBase",
+        "lista", "lista_bs", "listaBs"
+    ]
+
+    web_candidates = [
+        # precio final web
+        "precio_web", "precio", "price", "pvp",
+        "precio_final", "precioFinal",
+        "precio_venta", "precioVenta",
+        "precio_publico", "precioPublico",
+        "precio_publicado", "precioPublicado",
+        "precio_pub", "precioPub",
+        "final", "final_bs", "finalBs",
+        "publicado", "publicado_bs", "publicadoBs"
+    ]
+
+    def pick(cands):
+        for k in cands:
+            if k in prod and prod.get(k) not in (None, "", 0, "0", "0.0"):
+                val = _to_float_price(prod.get(k))
+                if val is not None:
+                    return val
+        # algunas estructuras anidadas
+        for nk in ("precios", "pricing", "price_info"):
+            sub = prod.get(nk)
+            if isinstance(sub, dict):
+                for k in cands:
+                    if k in sub:
+                        val = _to_float_price(sub.get(k))
+                        if val is not None:
+                            return val
+        return None
+
+    precio_excel = pick(excel_candidates)
+    precio_web = pick(web_candidates)
+
+    # Si no encontramos, poner 0.0 pero de forma explícita (para que el panel no quede vacío)
+    if precio_excel is None:
+        precio_excel = 0.0
+    if precio_web is None:
+        precio_web = 0.0
+
+    # Adjuntar campos "estándar" (no borra los existentes)
+    prod.setdefault("precio_excel", precio_excel)
+    prod.setdefault("precio_web", precio_web)
+
+    # Compatibilidad con paneles antiguos (muchos leen estas llaves)
+    prod.setdefault("precio_proveedor", precio_excel)
+    prod.setdefault("precio", precio_web)
+
+    return prod
 
 
 @app.route("/api/productos/<code>")
@@ -3106,7 +3204,19 @@ def api_producto_por_codigo(code):
         conn.close()
 
         if row and row[0]:
-            return jsonify({"ok": True, "producto": row[0]})
+            producto = row[0]
+            # por si viniera como string JSON
+            if isinstance(producto, str):
+                try:
+                    producto = json.loads(producto)
+                except Exception:
+                    producto = {"raw": producto}
+
+            if isinstance(producto, dict):
+                producto = _attach_admin_prices(producto)
+
+            return jsonify({"ok": True, "producto": producto})
+
     except Exception:
         # si falla BD, seguimos con fallback JSON
         pass
@@ -3138,7 +3248,11 @@ def api_producto_por_codigo(code):
     for p in productos:
         for k in keys:
             if k in p and norm(p.get(k)) == wanted:
-                return jsonify({"ok": True, "producto": p})
+                pp = p
+                if isinstance(pp, dict):
+                    pp = _attach_admin_prices(pp)
+                return jsonify({"ok": True, "producto": pp})
+
 
         # 2) ÚLTIMO FALLBACK: intentar leer desde Hostinger (truper_export/<code>/ficha.json)
         # Esto permite que el Admin encuentre productos que tú agregaste manualmente en el hosting,
@@ -3167,7 +3281,10 @@ def api_producto_por_codigo(code):
                         if not remote.get("codigo") and remote.get("code"):
                             remote["codigo"] = str(remote.get("code")).strip()
 
+                    if isinstance(remote, dict):
+                        remote = _attach_admin_prices(remote)
                     return jsonify({"ok": True, "producto": remote})
+
         except Exception:
             pass
 
