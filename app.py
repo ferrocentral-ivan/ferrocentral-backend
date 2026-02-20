@@ -3124,19 +3124,22 @@ def _attach_admin_prices(prod: dict) -> dict:
     ]
 
     def pick(cands):
+        # 1) llaves directas
         for k in cands:
-            if k in prod and prod.get(k) not in (None, "", 0, "0", "0.0"):
+            if k in prod:
                 val = _to_float_price(prod.get(k))
-                if val is not None:
+                # CLAVE: ignorar ceros tipo "0.00" que antes bloqueaban el valor real
+                if val is not None and val > 0:
                     return val
-        # algunas estructuras anidadas
+
+        # 2) algunas estructuras anidadas
         for nk in ("precios", "pricing", "price_info"):
             sub = prod.get(nk)
             if isinstance(sub, dict):
                 for k in cands:
-                    if k in sub and sub.get(k) not in (None, "", 0, "0", "0.0"):
+                    if k in sub:
                         val = _to_float_price(sub.get(k))
-                        if val is not None:
+                        if val is not None and val > 0:
                             return val
         return None
 
@@ -3149,7 +3152,23 @@ def _attach_admin_prices(prod: dict) -> dict:
         precio_web = 0.0
 
     def _is_zero_like(v):
-        return v in (None, "", 0, "0", "0.0")
+        if v is None:
+            return True
+        if isinstance(v, (int, float)):
+            return abs(float(v)) < 1e-9
+        if isinstance(v, str):
+            s = v.strip()
+            if s == "":
+                return True
+            # quitar "Bs", "Bs.", etc. si alguna vez llega así
+            s = s.replace("Bs.", "").replace("Bs", "").replace("bs.", "").replace("bs", "").strip()
+            # manejar coma decimal
+            s = s.replace(",", ".")
+            try:
+                return abs(float(s)) < 1e-9
+            except Exception:
+                return s in ("0", "0.0", "0.00")
+        return False
 
     # IMPORTANTE: no usar setdefault aquí, porque en tu BD hay productos con llaves antiguas
     # (precio_web/precio_excel) guardadas en 0, y eso “bloquea” el valor real (bs_price_web/bs_price_proveedor).
@@ -3222,8 +3241,8 @@ def api_producto_por_codigo(code):
         cur.close()
         conn.close()
 
-        if row and row[0]:
-            producto = row[0]
+        producto = (row.get("data") if isinstance(row, dict) else (row[0] if row else None))
+        if producto:
             # por si viniera como string JSON
             if isinstance(producto, str):
                 try:
