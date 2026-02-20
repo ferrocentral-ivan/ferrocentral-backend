@@ -3124,15 +3124,13 @@ def _attach_admin_prices(prod: dict) -> dict:
     ]
 
     def pick(cands):
-        # 1) llaves directas
         for k in cands:
             if k in prod:
                 val = _to_float_price(prod.get(k))
-                # CLAVE: ignorar ceros tipo "0.00" que antes bloqueaban el valor real
                 if val is not None and val > 0:
                     return val
 
-        # 2) algunas estructuras anidadas
+        #  algunas estructuras anidadas
         for nk in ("precios", "pricing", "price_info"):
             sub = prod.get(nk)
             if isinstance(sub, dict):
