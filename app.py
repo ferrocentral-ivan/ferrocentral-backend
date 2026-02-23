@@ -567,6 +567,72 @@ def activar_desactivar_admin(admin_id):
 
     return jsonify({"ok": True})
 
+@app.route("/api/admins/<int:admin_id>/role", methods=["POST"])
+@require_role("SUPER_ADMIN")
+def cambiar_rol_admin(admin_id):
+    data = request.json or {}
+    role = (data.get("role") or "").strip()
+
+    if role not in ("ADMIN", "SUPER_ADMIN"):
+        return jsonify({"ok": False, "error": "Rol inválido"}), 400
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    # Evitar dejar el sistema sin SUPER_ADMIN
+    if role != "SUPER_ADMIN":
+        cur.execute("SELECT role FROM admins WHERE id=%s", (admin_id,))
+        row = cur.fetchone()
+        current_role = (row.get("role") if isinstance(row, dict) else (row[0] if row else None))
+        if current_role == "SUPER_ADMIN":
+            cur.execute("SELECT COUNT(*) AS c FROM admins WHERE role='SUPER_ADMIN'")
+            c = cur.fetchone()["c"] if isinstance(cur.fetchone(), dict) else 0
+            # OJO: si tu cursor es dict, usa una sola fetch; si no, ajusta.
+            # Mejor versión segura:
+            cur.execute("SELECT COUNT(*) AS c FROM admins WHERE role='SUPER_ADMIN'")
+            c_row = cur.fetchone()
+            c = (c_row.get("c") if isinstance(c_row, dict) else c_row[0]) if c_row else 0
+            if int(c) <= 1:
+                conn.close()
+                return jsonify({"ok": False, "error": "Debe existir al menos 1 SUPER_ADMIN"}), 400
+
+    cur.execute("UPDATE admins SET role=%s WHERE id=%s", (role, admin_id))
+    conn.commit()
+    audit("ADMIN_ROLE", "admin", admin_id, {"role": role})
+    conn.close()
+
+    return jsonify({"ok": True})
+
+@app.route("/api/admins/<int:admin_id>", methods=["DELETE"])
+@require_role("SUPER_ADMIN")
+def eliminar_admin(admin_id):
+    # No permitir borrarse a sí mismo
+    if session.get("admin_id") == admin_id:
+        return jsonify({"ok": False, "error": "No puedes eliminar tu propio usuario en sesión"}), 400
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    # No permitir borrar SUPER_ADMIN (o permitir solo si hay más de 1)
+    cur.execute("SELECT role FROM admins WHERE id=%s", (admin_id,))
+    row = cur.fetchone()
+    role = (row.get("role") if isinstance(row, dict) else (row[0] if row else None))
+
+    if role == "SUPER_ADMIN":
+        cur.execute("SELECT COUNT(*) AS c FROM admins WHERE role='SUPER_ADMIN'")
+        c_row = cur.fetchone()
+        c = (c_row.get("c") if isinstance(c_row, dict) else c_row[0]) if c_row else 0
+        if int(c) <= 1:
+            conn.close()
+            return jsonify({"ok": False, "error": "No puedes eliminar el último SUPER_ADMIN"}), 400
+
+    cur.execute("DELETE FROM admins WHERE id=%s", (admin_id,))
+    conn.commit()
+    audit("ADMIN_ELIMINADO", "admin", admin_id, {})
+    conn.close()
+
+    return jsonify({"ok": True})
+
 @app.route("/api/audit", methods=["GET"])
 @require_role("SUPER_ADMIN")
 def api_audit():
