@@ -99,19 +99,24 @@ def health_check():
 
 
 CORS(app, origins=[
-  "http://127.0.0.1:5000",
-  "http://localhost:5000",
-  "https://ferrocentral.com.bo",
-  "https://www.ferrocentral.com.bo",
-  
+    "http://127.0.0.1:5000",
+    "http://localhost:5000",
+    "http://127.0.0.1:3001",
+    "http://localhost:3001",
+    "https://ferrocentral.com.bo",
+    "https://www.ferrocentral.com.bo",
+    "https://invitaciones.ferrocentral.com.bo",
 ], supports_credentials=True)
 
 
 ALLOWED_ORIGINS = {
     "http://127.0.0.1:5000",
     "http://localhost:5000",
+    "http://127.0.0.1:3001",
+    "http://localhost:3001",
     "https://ferrocentral.com.bo",
     "https://www.ferrocentral.com.bo",
+    "https://invitaciones.ferrocentral.com.bo",
 }
 
 @app.after_request
