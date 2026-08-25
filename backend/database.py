@@ -53,6 +53,30 @@ def create_tables():
     );
     """)
 
+    # ===== CLIENTES DE FERROCENTRAL INVITACIONES =====
+    # client_id guarda el ID CUID del model Client del proyecto Next.js.
+    # Así el backend de autenticación no necesita compartir la misma BD.
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS invitacion_clientes (
+        id SERIAL PRIMARY KEY,
+        client_id TEXT NOT NULL UNIQUE,
+        nombre TEXT NOT NULL,
+        telefono TEXT,
+        correo TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        reset_token TEXT,
+        reset_token_expira TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_invitacion_clientes_correo_lower
+    ON invitacion_clientes (LOWER(correo));
+    """)
+
     # ===== PEDIDOS =====
     cur.execute("""
     CREATE TABLE IF NOT EXISTS pedidos (

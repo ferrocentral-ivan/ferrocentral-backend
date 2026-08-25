@@ -69,6 +69,11 @@ def append_pedido_json(pedido_obj: dict):
 BASE_URL = os.environ.get("FRONTEND_BASE_URL", "https://ferrocentral.com.bo")
   # en local puedes usar "http://127.0.0.1:5000"
 
+INVITACIONES_BASE_URL = os.environ.get(
+    "INVITACIONES_BASE_URL",
+    "https://invitaciones.ferrocentral.com.bo",
+).rstrip("/")
+
 app = Flask(__name__, static_folder='.', static_url_path='')
 
 # ==== COOKIES / SESSION (PROD) ====
@@ -387,7 +392,11 @@ def audit(action: str, entity: str, entity_id=None, payload=None):
         cur = conn.cursor()
 
         actor_role = session.get("role") or "ANON"
-        actor_id = session.get("admin_id") or session.get("empresa_id")
+        actor_id = (
+            session.get("admin_id")
+            or session.get("empresa_id")
+            or session.get("invitacion_cliente_id")
+        )
 
         payload_json = None
         if payload is not None:
@@ -760,6 +769,119 @@ def api_password_reset():
     conn.close()
 
     return jsonify({"ok": True})
+
+
+@app.route('/api/invitaciones/password_reset_request', methods=['POST'])
+def api_invitaciones_password_reset_request():
+    data = request.json or {}
+    usuario = (data.get("usuario") or "").strip().lower()
+
+    if not usuario:
+        return jsonify({"ok": False, "error": "Falta correo"}), 400
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT id, correo
+        FROM invitacion_clientes
+        WHERE LOWER(correo) = %s
+          AND active = true
+        LIMIT 1
+    """, (usuario,))
+    row = cur.fetchone()
+
+    # No revelar si la cuenta existe o no.
+    if row is None:
+        conn.close()
+        return jsonify({"ok": True})
+
+    token = secrets.token_urlsafe(32)
+    expira = (datetime.utcnow() + timedelta(hours=2)).isoformat()
+
+    cur.execute("""
+        UPDATE invitacion_clientes
+        SET reset_token = %s,
+            reset_token_expira = %s,
+            updated_at = %s
+        WHERE id = %s
+    """, (token, expira, datetime.utcnow().isoformat(), row["id"]))
+
+    conn.commit()
+    conn.close()
+
+    link = f"{INVITACIONES_BASE_URL}/restablecer?token={quote(token)}"
+    send_reset_email(row["correo"], link)
+
+    return jsonify({"ok": True})
+
+
+@app.route('/api/invitaciones/password_reset', methods=['POST'])
+def api_invitaciones_password_reset():
+    data = request.json or {}
+    token = (data.get("token") or "").strip()
+    new_password = (data.get("password") or "").strip()
+
+    if not token or not new_password:
+        return jsonify({"ok": False, "error": "Faltan datos"}), 400
+
+    if len(new_password) < 8:
+        return jsonify({
+            "ok": False,
+            "error": "La contraseña debe tener al menos 8 caracteres"
+        }), 400
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT id, reset_token_expira
+        FROM invitacion_clientes
+        WHERE reset_token = %s
+          AND active = true
+        LIMIT 1
+    """, (token,))
+    row = cur.fetchone()
+
+    if row is None:
+        conn.close()
+        return jsonify({"ok": False, "error": "Enlace inválido"}), 400
+
+    try:
+        expira = (
+            datetime.fromisoformat(row["reset_token_expira"])
+            if row.get("reset_token_expira")
+            else None
+        )
+    except Exception:
+        expira = None
+
+    if not expira or expira < datetime.utcnow():
+        conn.close()
+        return jsonify({
+            "ok": False,
+            "error": "Enlace vencido, solicita uno nuevo"
+        }), 400
+
+    cur.execute("""
+        UPDATE invitacion_clientes
+        SET password_hash = %s,
+            reset_token = NULL,
+            reset_token_expira = NULL,
+            updated_at = %s
+        WHERE id = %s
+    """, (
+        generate_password_hash(new_password),
+        datetime.utcnow().isoformat(),
+        row["id"],
+    ))
+
+    conn.commit()
+    conn.close()
+
+    audit("INVITACION_CLIENTE_PASSWORD_RESET", "invitacion_cliente", row["id"])
+    return jsonify({"ok": True})
+
 
 @app.route('/api/admin_password_reset_request', methods=['POST'])
 def api_admin_password_reset_request():
@@ -3614,6 +3736,234 @@ def api_productos():
 
 
 
+
+@app.route('/api/invitaciones/clientes', methods=['POST'])
+@require_role("SUPER_ADMIN")
+def api_crear_invitacion_cliente():
+    data = request.json or {}
+
+    client_id = (data.get("client_id") or "").strip()
+    nombre = (data.get("nombre") or "").strip()
+    telefono = (data.get("telefono") or "").strip()
+    correo = (data.get("correo") or "").strip().lower()
+    password = (data.get("password") or "").strip()
+
+    if not client_id or not nombre or not correo or not password:
+        return jsonify({
+            "ok": False,
+            "error": "Faltan client_id, nombre, correo o contraseña"
+        }), 400
+
+    if len(client_id) > 120:
+        return jsonify({"ok": False, "error": "client_id inválido"}), 400
+
+    if len(nombre) > 180:
+        return jsonify({"ok": False, "error": "Nombre demasiado largo"}), 400
+
+    if len(correo) > 254 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", correo):
+        return jsonify({"ok": False, "error": "Correo inválido"}), 400
+
+    if len(password) < 8:
+        return jsonify({
+            "ok": False,
+            "error": "La contraseña debe tener al menos 8 caracteres"
+        }), 400
+
+    now = datetime.utcnow().isoformat()
+    password_hash = generate_password_hash(password)
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    try:
+        cur.execute("""
+            INSERT INTO invitacion_clientes (
+                client_id,
+                nombre,
+                telefono,
+                correo,
+                password_hash,
+                active,
+                created_at,
+                updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, true, %s, %s)
+            RETURNING id
+        """, (
+            client_id,
+            nombre,
+            telefono or None,
+            correo,
+            password_hash,
+            now,
+            now,
+        ))
+
+        account_id = cur.fetchone()["id"]
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        msg = str(e).lower()
+
+        if "invitacion_clientes_correo_key" in msg or (
+            "duplicate key" in msg and "correo" in msg
+        ):
+            return jsonify({
+                "ok": False,
+                "error": "Ese correo ya tiene acceso a Invitaciones"
+            }), 409
+
+        if "invitacion_clientes_client_id_key" in msg or (
+            "duplicate key" in msg and "client_id" in msg
+        ):
+            return jsonify({
+                "ok": False,
+                "error": "Ese cliente ya tiene una cuenta de acceso"
+            }), 409
+
+        return jsonify({
+            "ok": False,
+            "error": "No se pudo crear la cuenta de Invitaciones"
+        }), 500
+
+    conn.close()
+
+    audit("INVITACION_CLIENTE_CREADO", "invitacion_cliente", account_id, {
+        "client_id": client_id,
+        "correo": correo,
+    })
+
+    return jsonify({
+        "ok": True,
+        "cuenta": {
+            "id": account_id,
+            "client_id": client_id,
+            "nombre": nombre,
+            "telefono": telefono,
+            "correo": correo,
+            "active": True,
+        }
+    }), 201
+
+
+@app.route('/api/invitaciones/clientes/<path:client_id>', methods=['GET', 'PATCH'])
+@require_role("SUPER_ADMIN")
+def api_invitacion_cliente_detalle(client_id):
+    client_id = (client_id or "").strip()
+    if not client_id:
+        return jsonify({"ok": False, "error": "client_id inválido"}), 400
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    if request.method == "GET":
+        cur.execute("""
+            SELECT id, client_id, nombre, telefono, correo, active, created_at, updated_at
+            FROM invitacion_clientes
+            WHERE client_id = %s
+            LIMIT 1
+        """, (client_id,))
+        row = cur.fetchone()
+        conn.close()
+
+        if not row:
+            return jsonify({"ok": True, "cuenta": None})
+
+        return jsonify({"ok": True, "cuenta": dict(row)})
+
+    data = request.json or {}
+    updates = []
+    params = []
+
+    if "nombre" in data:
+        nombre = (data.get("nombre") or "").strip()
+        if not nombre or len(nombre) > 180:
+            conn.close()
+            return jsonify({"ok": False, "error": "Nombre inválido"}), 400
+        updates.append("nombre = %s")
+        params.append(nombre)
+
+    if "telefono" in data:
+        telefono = (data.get("telefono") or "").strip()
+        updates.append("telefono = %s")
+        params.append(telefono or None)
+
+    if "correo" in data:
+        correo = (data.get("correo") or "").strip().lower()
+        if len(correo) > 254 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", correo):
+            conn.close()
+            return jsonify({"ok": False, "error": "Correo inválido"}), 400
+        updates.append("correo = %s")
+        params.append(correo)
+
+    if "active" in data:
+        updates.append("active = %s")
+        params.append(bool(data.get("active")))
+
+    if "password" in data:
+        password = (data.get("password") or "").strip()
+        if password:
+            if len(password) < 8:
+                conn.close()
+                return jsonify({
+                    "ok": False,
+                    "error": "La contraseña debe tener al menos 8 caracteres"
+                }), 400
+            updates.append("password_hash = %s")
+            params.append(generate_password_hash(password))
+
+    if not updates:
+        conn.close()
+        return jsonify({"ok": False, "error": "No hay cambios"}), 400
+
+    updates.append("updated_at = %s")
+    params.append(datetime.utcnow().isoformat())
+    params.append(client_id)
+
+    try:
+        cur.execute(
+            f"""
+            UPDATE invitacion_clientes
+            SET {", ".join(updates)}
+            WHERE client_id = %s
+            RETURNING id, client_id, nombre, telefono, correo, active, created_at, updated_at
+            """,
+            tuple(params),
+        )
+        row = cur.fetchone()
+
+        if not row:
+            conn.rollback()
+            conn.close()
+            return jsonify({"ok": False, "error": "Cuenta no encontrada"}), 404
+
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+
+        if "duplicate key" in str(e).lower():
+            return jsonify({
+                "ok": False,
+                "error": "Ese correo ya está usado por otra cuenta"
+            }), 409
+
+        return jsonify({
+            "ok": False,
+            "error": "No se pudo actualizar la cuenta"
+        }), 500
+
+    conn.close()
+
+    audit("INVITACION_CLIENTE_ACTUALIZADO", "invitacion_cliente", row["id"], {
+        "client_id": client_id,
+        "campos": [u.split(" = ")[0] for u in updates if not u.startswith("updated_at")],
+    })
+
+    return jsonify({"ok": True, "cuenta": dict(row)})
+
+
 @app.route('/api/registro-empresa', methods=['POST'])
 @require_role("SUPER_ADMIN", "ADMIN")
 def api_registro_empresa():
@@ -3692,6 +4042,57 @@ def auth_login():
 
 
         return jsonify({"ok": True, "role": row["role"], "redirect": "/admin.html"})
+
+
+    # ---- LOGIN CLIENTE DE INVITACIONES ----
+    if tipo in ("invitaciones", "invitacion", "cliente_invitaciones"):
+        try:
+            conn = get_connection()
+        except Exception:
+            return jsonify({
+                "ok": False,
+                "error": "Servidor sin conexión a la base de datos"
+            }), 503
+
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, client_id, nombre, telefono, correo, password_hash, active
+            FROM invitacion_clientes
+            WHERE LOWER(correo) = %s
+            LIMIT 1
+        """, (usuario.lower(),))
+        row = cur.fetchone()
+        conn.close()
+
+        if not row or not row.get("active"):
+            return jsonify({"ok": False, "error": "Credenciales inválidas"}), 401
+
+        if not check_password_hash(row["password_hash"], password):
+            return jsonify({"ok": False, "error": "Credenciales inválidas"}), 401
+
+        session.clear()
+        session["role"] = "INVITACIONES_CLIENTE"
+        session["invitacion_cliente_id"] = row["id"]
+        session["invitacion_client_id"] = row["client_id"]
+        session["user"] = row["correo"]
+        session.permanent = True
+
+        audit("LOGIN", "invitacion_cliente", row["id"], {
+            "client_id": row["client_id"],
+        })
+
+        return jsonify({
+            "ok": True,
+            "role": "INVITACIONES_CLIENTE",
+            "redirect": f"{INVITACIONES_BASE_URL}/cliente",
+            "invitacion_cliente": {
+                "id": row["id"],
+                "client_id": row["client_id"],
+                "nombre": row["nombre"],
+                "telefono": row.get("telefono") or "",
+                "correo": row["correo"],
+            }
+        })
 
     # ---- LOGIN EMPRESA ----
     password_hash = hashlib.sha256(password.encode()).hexdigest()
@@ -3775,8 +4176,43 @@ def auth_me():
         "role": role,
         "admin_id": session.get("admin_id"),
         "empresa_id": session.get("empresa_id"),
+        "invitacion_cliente_id": session.get("invitacion_cliente_id"),
+        "invitacion_client_id": session.get("invitacion_client_id"),
         "user": session.get("user"),
     }
+
+    # Si es cliente de Invitaciones, devolvemos su vínculo con Client de Next.js.
+    if role == "INVITACIONES_CLIENTE" and session.get("invitacion_cliente_id"):
+        try:
+            conn = get_connection()
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT id, client_id, nombre, telefono, correo, active
+                FROM invitacion_clientes
+                WHERE id = %s
+                LIMIT 1
+            """, (session["invitacion_cliente_id"],))
+            inv = cur.fetchone()
+            conn.close()
+
+            if not inv or not inv.get("active"):
+                session.clear()
+                return jsonify({"ok": False}), 401
+
+            # Refrescamos el vínculo por si el Super Admin lo corrigió.
+            session["invitacion_client_id"] = inv["client_id"]
+            session["user"] = inv["correo"]
+
+            resp["invitacion_cliente"] = {
+                "id": inv["id"],
+                "client_id": inv["client_id"],
+                "nombre": inv["nombre"],
+                "telefono": inv.get("telefono") or "",
+                "correo": inv["correo"],
+            }
+            resp["invitacion_client_id"] = inv["client_id"]
+        except Exception:
+            return jsonify({"ok": False}), 503
 
     # Si es empresa, devolvemos datos básicos
     if role == "EMPRESA" and session.get("empresa_id"):
