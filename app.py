@@ -139,11 +139,13 @@ def add_cors_headers(resp):
 
 
 
-def send_reset_email(to_email, link):
-    """
-    Envío por RESEND (HTTPS) como primera opción (ideal en Render).
-    Si RESEND no está configurado, intenta SMTP.
-    Si SMTP falla o falta config, hace fallback a print (no rompe nada).
+def send_reset_email(to_email, link, *, invitaciones=False, invitaciones_mode="reset", nombre="", event_slug=""):
+    """Envía enlaces de contraseña mediante el transporte existente Resend/SMTP.
+
+    - ferretería / Admin: mensaje original, sin modificaciones.
+    - invitaciones + reset: solicitud pública de recuperación.
+    - invitaciones + welcome: solo se selecciona desde una sesión SUPER_ADMIN.
+    No crea tokens ni cambia su expiración o validación.
     """
     subject = "Restablecer contraseña - Ferrocentral"
     body_text = f"""Hola,
@@ -157,52 +159,153 @@ def send_reset_email(to_email, link):
 
     Ferrocentral
     """
+    body_html = None
 
-    # =========================================================
-    # 1) RESEND (HTTPS) - recomendado para Render
-    # =========================================================
+    if invitaciones:
+        from html import escape as html_escape
+
+        welcome = invitaciones_mode == "welcome"
+        customer = (nombre or "").strip()[:150]
+        safe_customer = html_escape(customer)
+        greeting = f"Hola, {customer}:" if customer else "Hola:"
+        greeting_html = f"<p style=\"font-size:15px;line-height:1.7;margin:0 0 15px;\">Hola, {safe_customer}:</p>" if customer else ""
+        safe_link = html_escape(str(link), quote=True)
+        base_site = html_escape(INVITACIONES_BASE_URL, quote=True)
+        portal_url = f"{base_site}/cliente"
+        valid_slug = (event_slug or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9-]{1,120}", valid_slug):
+            valid_slug = ""
+        invitation_url = f"{INVITACIONES_BASE_URL}/e/{valid_slug}" if valid_slug and welcome else ""
+        safe_invitation_url = html_escape(invitation_url, quote=True)
+
+        if welcome:
+            subject = "Tu invitación Premium está publicada | FerroCentral Invitaciones"
+            section = "BIENVENIDA PREMIUM"
+            heading = "¡Bienvenido a tu espacio Premium!"
+            intro = "Tu invitación Premium ya está publicada. Desde tu espacio privado podrás gestionar invitados y confirmaciones, según las herramientas de tu plan."
+            explanation = "Para configurar tu contraseña, utiliza el botón. Si ya tenías acceso, puedes seguir entrando con tu contraseña habitual."
+            cta = "Crear mi contraseña"
+            closing = "Si no reconoces esta invitación, ignora el mensaje y contacta con FerroCentral. No compartas el enlace de contraseña."
+            body_text = f"""{greeting}
+
+¡Tu invitación Premium está publicada!
+
+{intro}
+
+{explanation}
+
+Enlace personal para configurar tu contraseña (válido 2 horas):
+{link}
+
+Tu panel privado: {INVITACIONES_BASE_URL}/cliente
+"""
+            if invitation_url:
+                body_text += f"\nTu invitación pública: {invitation_url}\n"
+            body_text += f"\n{closing}\n\nFerroCentral Invitaciones\n"
+            invitation_block = (
+                f'<p style="font-size:14px;line-height:1.7;margin:12px 0 0;">'
+                f'<a href="{safe_invitation_url}" style="color:#245c45;">Ver mi invitación publicada &rarr;</a></p>'
+                if invitation_url else ""
+            )
+            secondary_block = (
+                f'<p style="font-size:14px;line-height:1.7;margin:23px 0 0;">'
+                f'Tu espacio privado: <a href="{portal_url}" style="color:#245c45;">Acceder al panel Premium</a></p>{invitation_block}'
+            )
+        else:
+            subject = "Restablece tu contraseña | FerroCentral Invitaciones"
+            section = "RECUPERACIÓN DE ACCESO"
+            heading = "Restablece tu contraseña"
+            intro = "Recibimos una solicitud para recuperar el acceso a tu cuenta de FerroCentral Invitaciones."
+            explanation = "Si fuiste tú, establece una contraseña nueva desde el enlace seguro."
+            cta = "Restablecer contraseña"
+            closing = "Si no solicitaste recuperar tu contraseña, puedes ignorar este mensaje. No compartas este enlace."
+            body_text = f"""{greeting}
+
+{intro}
+
+{explanation}
+
+Enlace seguro (válido durante 2 horas):
+{link}
+
+{closing}
+
+FerroCentral Invitaciones
+"""
+            secondary_block = ""
+
+        body_html = f"""<!DOCTYPE html>
+<html lang="es">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f6f5f1;font-family:Arial,Helvetica,sans-serif;color:#273a33;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f6f5f1;padding:28px 12px;">
+<tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border:1px solid #e6e3da;border-radius:16px;overflow:hidden;">
+<tr><td align="center" style="padding:28px 22px;background:#213e34;">
+<div style="font-family:Georgia,serif;font-size:32px;color:#dcc492;line-height:1.15;">FC</div>
+<div style="font-size:13px;font-weight:700;letter-spacing:1.8px;color:#ffffff;margin-top:10px;">FERROCENTRAL INVITACIONES</div>
+<div style="font-size:12px;color:#d5e2d9;margin-top:8px;">Momentos que merecen recordarse</div>
+</td></tr>
+<tr><td style="padding:32px 28px;">
+<div style="font-size:12px;letter-spacing:1.4px;font-weight:700;color:#94794d;">{section}</div>
+<h1 style="font-family:Georgia,serif;font-size:28px;font-weight:normal;line-height:1.2;margin:16px 0 18px;color:#213e34;">{heading}</h1>
+{greeting_html}
+<p style="font-size:15px;line-height:1.7;margin:0 0 16px;">{intro}</p>
+<p style="font-size:15px;line-height:1.7;margin:0 0 16px;">{explanation}</p>
+<p style="font-size:14px;line-height:1.7;margin:0 0 24px;">Por tu seguridad, este enlace estará disponible durante <strong>2 horas</strong>.</p>
+<table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="background:#213e34;border-radius:8px;">
+<a href="{safe_link}" style="color:#ffffff;font-size:15px;font-weight:700;text-decoration:none;padding:16px 22px;display:inline-block;">{cta} &rarr;</a>
+</td></tr></table>
+{secondary_block}
+<p style="font-size:12px;line-height:1.7;color:#687870;margin:24px 0 5px;">Si el botón no funciona, copia este enlace en tu navegador:</p>
+<p style="font-size:12px;line-height:1.7;overflow-wrap:anywhere;word-break:break-all;margin:0;"><a href="{safe_link}" style="color:#235640;">{safe_link}</a></p>
+<hr style="border:0;border-top:1px solid #e6e3da;margin:26px 0 18px;">
+<p style="font-size:12px;line-height:1.7;color:#6a776f;margin:0;">{closing}</p>
+</td></tr>
+</table>
+<div style="padding:22px 14px;font-size:12px;color:#737d74;">FerroCentral Invitaciones &middot; <a href="{base_site}" style="color:#355747;">Visitar el sitio</a></div>
+</td></tr></table>
+</body></html>"""
+
+    # 1) RESEND (HTTPS): se mantiene como primera opción.
     resend_key = os.environ.get("RESEND_API_KEY", "").strip()
     email_from = os.environ.get("EMAIL_FROM", "contacto@ferrocentral.com.bo").strip()
 
     if resend_key:
         try:
             import requests
-
             payload = {
                 "from": email_from,
                 "to": [to_email],
                 "subject": subject,
-                "text": body_text
+                "text": body_text,
             }
+            if body_html is not None:
+                payload["html"] = body_html
 
             r = requests.post(
                 "https://api.resend.com/emails",
                 headers={
                     "Authorization": f"Bearer {resend_key}",
-                    "Content-Type": "application/json"
+                    "Content-Type": "application/json",
                 },
                 json=payload,
-                timeout=15
+                timeout=15,
             )
-
             if 200 <= r.status_code < 300:
                 print(f"INFO: RESEND ok -> enviado a {to_email}")
                 return
-            else:
-                print(f"WARN: RESEND falló ({r.status_code}) -> {r.text}")
-
+            print(f"WARN: RESEND falló ({r.status_code}) -> {r.text}")
         except Exception as e:
             print(f"ERROR: RESEND exception -> {e}")
 
-    # =========================================================
-    # 2) SMTP (backup)
-    # =========================================================
+    # 2) SMTP: la configuración, autenticación y fallback siguen igual.
     smtp_host = os.environ.get("SMTP_HOST", "").strip()
     smtp_port = int(os.environ.get("SMTP_PORT", "587"))
     smtp_user = os.environ.get("SMTP_USER", "").strip()
     smtp_pass = os.environ.get("SMTP_PASS", "").strip()
     smtp_from = os.environ.get("SMTP_FROM", smtp_user).strip()
-    smtp_tls = os.environ.get("SMTP_TLS", "1").strip()  # "1" o "0"
+    smtp_tls = os.environ.get("SMTP_TLS", "1").strip()
 
     if not smtp_host or not smtp_user or not smtp_pass:
         print("WARN: SMTP no configurado. Link de reset:")
@@ -214,6 +317,8 @@ def send_reset_email(to_email, link):
     msg["From"] = smtp_from
     msg["To"] = to_email
     msg.set_content(body_text)
+    if body_html is not None:
+        msg.add_alternative(body_html, subtype="html")
 
     try:
         if smtp_port == 465:
@@ -229,9 +334,7 @@ def send_reset_email(to_email, link):
                     server.ehlo()
                 server.login(smtp_user, smtp_pass)
                 server.send_message(msg)
-
         print(f"INFO: SMTP ok -> enviado a {to_email}")
-
     except Exception as e:
         print(f"ERROR: SMTP -> {e}")
         print("Link de reset (fallback):", link)
@@ -783,7 +886,7 @@ def api_invitaciones_password_reset_request():
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT id, correo
+        SELECT id, correo, nombre
         FROM invitacion_clientes
         WHERE LOWER(correo) = %s
           AND active = true
@@ -811,7 +914,18 @@ def api_invitaciones_password_reset_request():
     conn.close()
 
     link = f"{INVITACIONES_BASE_URL}/restablecer?token={quote(token)}"
-    send_reset_email(row["correo"], link)
+    # La bienvenida solo se admite desde una sesión autenticada de SUPER_ADMIN.
+    # Las solicitudes públicas del formulario de recuperación siempre usan "reset".
+    is_admin_welcome = (
+        data.get("email_context") == "premium_published"
+        and session.get("role") == "SUPER_ADMIN"
+    )
+    send_reset_email(
+        row["correo"], link, invitaciones=True,
+        invitaciones_mode="welcome" if is_admin_welcome else "reset",
+        nombre=row.get("nombre") or "",
+        event_slug=data.get("event_slug") if is_admin_welcome else "",
+    )
 
     return jsonify({"ok": True})
 
