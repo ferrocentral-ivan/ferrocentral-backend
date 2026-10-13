@@ -171,7 +171,7 @@ def send_reset_email(to_email, link, *, invitaciones=False, invitaciones_mode="r
         greeting_html = f"<p style=\"font-size:15px;line-height:1.7;margin:0 0 15px;\">Hola, {safe_customer}:</p>" if customer else ""
         safe_link = html_escape(str(link), quote=True)
         base_site = html_escape(INVITACIONES_BASE_URL, quote=True)
-        portal_url = f"{base_site}/cliente"
+        portal_url = f"{base_site}/acceso"
         valid_slug = (event_slug or "").strip()
         if not re.fullmatch(r"[A-Za-z0-9-]{1,120}", valid_slug):
             valid_slug = ""
@@ -197,7 +197,7 @@ def send_reset_email(to_email, link, *, invitaciones=False, invitaciones_mode="r
 Enlace personal para configurar tu contraseña (válido 2 horas):
 {link}
 
-Tu panel privado: {INVITACIONES_BASE_URL}/cliente
+Tu acceso privado: {INVITACIONES_BASE_URL}/acceso
 """
             if invitation_url:
                 body_text += f"\nTu invitación pública: {invitation_url}\n"
@@ -293,11 +293,17 @@ FerroCentral Invitaciones
                 timeout=15,
             )
             if 200 <= r.status_code < 300:
-                print(f"INFO: RESEND ok -> enviado a {to_email}")
-                return
-            print(f"WARN: RESEND falló ({r.status_code}) -> {r.text}")
+                # Resend aceptó la solicitud, no garantiza la entrega en bandeja.
+                print("INFO: RESEND aceptó solicitud de correo")
+                return True
+            print(f"WARN: RESEND rechazó la solicitud ({r.status_code})")
         except Exception as e:
-            print(f"ERROR: RESEND exception -> {e}")
+            print(f"ERROR: RESEND exception ({type(e).__name__})")
+            if invitaciones and invitaciones_mode == "welcome":
+                # La solicitud pudo haberse procesado antes del timeout.
+                # No enviamos por SMTP automáticamente para limitar duplicados.
+                print("WARN: Bienvenida Premium: resultado indeterminado; requiere verificación manual.")
+                return False
 
     # 2) SMTP: la configuración, autenticación y fallback siguen igual.
     smtp_host = os.environ.get("SMTP_HOST", "").strip()
@@ -308,9 +314,8 @@ FerroCentral Invitaciones
     smtp_tls = os.environ.get("SMTP_TLS", "1").strip()
 
     if not smtp_host or not smtp_user or not smtp_pass:
-        print("WARN: SMTP no configurado. Link de reset:")
-        print(f"Enviar este enlace a {to_email}: {link}")
-        return
+        print("WARN: No hay un proveedor de correo configurado o disponible.")
+        return False
 
     msg = EmailMessage()
     msg["Subject"] = subject
@@ -334,10 +339,11 @@ FerroCentral Invitaciones
                     server.ehlo()
                 server.login(smtp_user, smtp_pass)
                 server.send_message(msg)
-        print(f"INFO: SMTP ok -> enviado a {to_email}")
+        print("INFO: SMTP aceptó la solicitud de correo")
+        return True
     except Exception as e:
-        print(f"ERROR: SMTP -> {e}")
-        print("Link de reset (fallback):", link)
+        print(f"ERROR: SMTP ({type(e).__name__})")
+        return False
 
 
 
@@ -878,9 +884,13 @@ def api_password_reset():
 def api_invitaciones_password_reset_request():
     data = request.json or {}
     usuario = (data.get("usuario") or "").strip().lower()
+    wants_welcome = data.get("email_context") == "premium_published"
 
     if not usuario:
         return jsonify({"ok": False, "error": "Falta correo"}), 400
+    if wants_welcome and session.get("role") != "SUPER_ADMIN":
+        # No permitir que una solicitud pública se disfrace de bienvenida.
+        return jsonify({"ok": False, "error": "Permiso de administrador requerido."}), 403
 
     conn = get_connection()
     cur = conn.cursor()
@@ -894,9 +904,12 @@ def api_invitaciones_password_reset_request():
     """, (usuario,))
     row = cur.fetchone()
 
-    # No revelar si la cuenta existe o no.
+    # El administrador necesita un error si no hay cuenta real que notificar.
+    # El formulario público mantiene la respuesta neutra para evitar enumeración.
     if row is None:
         conn.close()
+        if wants_welcome:
+            return jsonify({"ok": False, "error": "No existe una cuenta Premium activa para ese correo."}), 404
         return jsonify({"ok": True})
 
     token = secrets.token_urlsafe(32)
@@ -914,19 +927,20 @@ def api_invitaciones_password_reset_request():
     conn.close()
 
     link = f"{INVITACIONES_BASE_URL}/restablecer?token={quote(token)}"
-    # La bienvenida solo se admite desde una sesión autenticada de SUPER_ADMIN.
-    # Las solicitudes públicas del formulario de recuperación siempre usan "reset".
-    is_admin_welcome = (
-        data.get("email_context") == "premium_published"
-        and session.get("role") == "SUPER_ADMIN"
-    )
-    send_reset_email(
+    accepted = send_reset_email(
         row["correo"], link, invitaciones=True,
-        invitaciones_mode="welcome" if is_admin_welcome else "reset",
+        invitaciones_mode="welcome" if wants_welcome else "reset",
         nombre=row.get("nombre") or "",
-        event_slug=data.get("event_slug") if is_admin_welcome else "",
+        event_slug=data.get("event_slug") if wants_welcome else "",
     )
-
+    if wants_welcome and accepted is not True:
+        # La invitación sigue PUBLICADA; Studio debe dejar el acceso pendiente.
+        # 503 permite reintento desde Pagos sin marcar portalAccessSentAt.
+        return jsonify({
+            "ok": False,
+            "error": "No se confirmó la aceptación del correo Premium. Revisa el proveedor antes de reintentar."
+        }), 503
+    # La recuperación pública mantiene respuesta neutra aunque falle el envío.
     return jsonify({"ok": True})
 
 
