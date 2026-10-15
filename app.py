@@ -436,22 +436,36 @@ def _row_first_value(row, default=0):
 
 
 def bootstrap_super_admin():
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) AS c FROM admins")
-    c = cur.fetchone()["c"] or 0
+    """Crea el primer SUPER_ADMIN solo en una BD vacía y con clave segura.
 
-    if c == 0:
+    Las cuentas existentes nunca se actualizan ni se restablecen aquí.
+    La contraseña inicial se suministra únicamente mediante variable de entorno.
+    """
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) AS c FROM admins")
+        c = cur.fetchone()["c"] or 0
+        if c != 0:
+            return  # Mantener intactos los administradores existentes.
+
+        password = os.environ.get("BOOTSTRAP_SUPER_ADMIN_PASSWORD", "")
+        if len(password) < 16:
+            print(
+                "BOOTSTRAP ADMIN: no se creó el primer SUPER_ADMIN. "
+                "Configura BOOTSTRAP_SUPER_ADMIN_PASSWORD (mínimo 16 caracteres) "
+                "si esta base de datos es nueva."
+            )
+            return
+
         username = "contacto@ferrocentral.com.bo"
-        password = "admin1994"  # luego lo cambiamos
         cur.execute("""
             INSERT INTO admins (username, password_hash, role, active, created_at)
             VALUES (%s, %s, 'SUPER_ADMIN', true, %s)
         """, (username, generate_password_hash(password), datetime.utcnow()))
-
         conn.commit()
-
-    conn.close()
+    finally:
+        conn.close()
 
 
 
@@ -3825,17 +3839,6 @@ def api_admin_stats():
 @app.route("/api/ping")
 def api_ping():
     return {"ok": True, "message": "Servidor Flask funcionando ✅"}
-
-
-@app.get("/api/debug/session")
-def debug_session():
-    return jsonify({
-        "ok": True,
-        "role": session.get("role"),
-        "admin_id": session.get("admin_id"),
-        "empresa_id": session.get("empresa_id"),
-        "cookie_header": request.headers.get("Cookie"),
-    })
 
 
 
